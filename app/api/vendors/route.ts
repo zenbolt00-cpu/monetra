@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 
     // Add quick stats for each vendor
     const vendorsWithStats = await Promise.all(
-      vendors.map(async (vendor) => {
+      vendors.map(async (vendor: any) => {
         const payin = await prisma.transaction.aggregate({
           where: {
             vendorId: vendor.id,

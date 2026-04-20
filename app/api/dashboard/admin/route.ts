@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
       ORDER BY 1 ASC
     `;
 
-    const serializedMonthlyData = monthlyData.map((m) => ({
+    const serializedMonthlyData = monthlyData.map((m: any) => ({
       month: m.month,
       payin: Number(m.payin || 0),
       payout: Number(m.payout || 0)
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
     });
 
     const vendorsWithVolume = await Promise.all(
-      topVendors.map(async (v) => {
+      topVendors.map(async (v: any) => {
         const volume = await prisma.transaction.aggregate({
           where: { vendorId: v.id, status: "CONFIRMED" },
           _sum: { amount: true },
@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
       topVendors: vendorsWithVolume.sort((a, b) => b.volume - a.volume),
       recentTransactions,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Dashboard error:", error);
     return NextResponse.json({ error: "Failed to fetch dashboard stats" }, { status: 500 });
   }

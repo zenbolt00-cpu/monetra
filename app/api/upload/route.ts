@@ -6,6 +6,7 @@ import { processExcel, processPDF } from "@/lib/fileProcessor";
 import { FileType, FileStatus, TxType } from "@prisma/client";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
+import os from "os";
 import prisma from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
@@ -46,10 +47,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Save file locally
+    // Save file locally (use /tmp on Vercel)
+    const isVercel = process.env.VERCEL === "1";
     const uploadDir =
-      process.env.UPLOAD_DIR || path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadDir, { recursive: true });
+      process.env.UPLOAD_DIR || (isVercel ? os.tmpdir() : path.join(process.cwd(), "public", "uploads"));
+    
+    if (!isVercel) {
+      await mkdir(uploadDir, { recursive: true });
+    }
 
     const uniqueFileName = `${Date.now()}-${fileName.replace(
       /[^a-zA-Z0-9.-]/g,
@@ -58,7 +63,7 @@ export async function POST(req: NextRequest) {
     const filePath = path.join(uploadDir, uniqueFileName);
     await writeFile(filePath, buffer);
 
-    const fileUrl = `/uploads/${uniqueFileName}`;
+    const fileUrl = isVercel ? `/api/file/${uniqueFileName}` : `/uploads/${uniqueFileName}`;
 
     // Resolved vendor ID
     const resolvedVendorId =

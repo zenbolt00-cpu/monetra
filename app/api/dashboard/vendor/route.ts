@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
       ORDER BY 1 ASC
     `;
 
-    const serializedMonthlyData = monthlyData.map((m) => ({
+    const serializedMonthlyData = monthlyData.map((m: any) => ({
       month: m.month,
       payin: Number(m.payin || 0),
       payout: Number(m.payout || 0)
@@ -75,7 +75,7 @@ export async function GET(req: NextRequest) {
       recentTransactions,
       recentFiles,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Vendor Dashboard error:", error);
     return NextResponse.json({ error: "Failed to fetch vendor dashboard stats" }, { status: 500 });
   }
