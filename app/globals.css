@@ -2,32 +2,165 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+
+    --card: 0 0% 100% / 0.6;
+    --card-foreground: 240 10% 3.9%;
+
+    --popover: 0 0% 100% / 0.8;
+    --popover-foreground: 240 10% 3.9%;
+
+    --primary: 212 100% 50%; /* iOS system blue #007AFF for light mode */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+
+    --accent: 212 100% 52%;
+    --accent-foreground: 240 5.9% 10%;
+
+    --destructive: 0 84.2% 60.2%; /* iOS red */
+    --destructive-foreground: 0 0% 98%;
+
+    --success: 142 70% 45%; /* iOS green */
+    --warning: 48 96% 53%; /* iOS yellow */
+
+    --border: 0 0% 0% / 0.08;
+    --input: 0 0% 0% / 0.06;
+    --ring: 212 100% 50%;
+
+    --radius: 20px;
   }
 }
 
-body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-primary/20;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: #F5F5F7;
+    background-image: 
+      radial-gradient(at 0% 0%, hsla(212,100%,50%,0.05) 0, transparent 50%), 
+      radial-gradient(at 50% 0%, hsla(255,100%,50%,0.03) 0, transparent 50%),
+      radial-gradient(at 100% 0%, hsla(212,100%,50%,0.05) 0, transparent 50%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
 }
 
 @layer utilities {
-  .text-balance {
-    text-wrap: balance;
+  .glass {
+    background: rgba(255, 255, 255, 0.4);
+    backdrop-filter: blur(40px) saturate(200%);
+    -webkit-backdrop-filter: blur(40px) saturate(200%);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.05);
+  }
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.45);
+    backdrop-filter: blur(40px) saturate(200%);
+    -webkit-backdrop-filter: blur(40px) saturate(200%);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 24px;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.04);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .glass-card:hover {
+    transform: translateY(-4px);
+    background: rgba(255, 255, 255, 0.6);
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.08);
+  }
+
+  .glass-sidebar {
+    background: rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(40px) saturate(200%);
+    -webkit-backdrop-filter: blur(40px) saturate(200%);
+    border-right: 1px solid rgba(0, 0, 0, 0.05);
+  }
+
+  .glass-modal {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(60px) saturate(210%);
+    -webkit-backdrop-filter: blur(60px) saturate(210%);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    border-radius: 32px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.1);
+  }
+
+  .glass-pill {
+    background: rgba(0, 0, 0, 0.03);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    border-radius: 9999px;
+  }
+
+  .glass-input {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    border-radius: 12px;
+    color: #1d1d1f;
+    transition: all 0.25s ease;
+  }
+
+  .glass-input:focus {
+    background: rgba(255, 255, 255, 0.9);
+    border-color: #007AFF;
+    outline: none;
+    box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+  }
+
+  .glass-button {
+    background: rgba(0, 0, 0, 0.04);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(0, 0, 0, 0.02);
+    border-radius: 12px;
+    transition: all 0.2s;
+    color: #1d1d1f;
+  }
+
+  .glass-button:hover {
+    background: rgba(0, 0, 0, 0.08);
+  }
+
+  .ios-blue-gradient {
+    background: linear-gradient(180deg, #007AFF 0%, #0056B3 100%);
+  }
+
+  .spring-entrance {
+    animation: spring-entrance 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) backwards;
   }
 }
+
+@keyframes spring-entrance {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.glass-table-row:nth-child(even) {
+  background: rgba(0, 0, 0, 0.015);
+}
+
+.secondary-text {
+  color: #86868b;
+  font-size: 0.875rem;
+}
+
+.ios-red { color: #FF3B30; }
+.ios-green { color: #34C759; }
+.ios-blue { color: #007AFF; }

@@ -19,6 +19,11 @@
 # misc
 .DS_Store
 *.pem
+/public/uploads/
+/scratch/
+.env.development
+.env.production
+.env.test
 
 # debug
 npm-debug.log*
@@ -26,7 +31,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
+.env
 .env*.local
+.env.local
 
 # vercel
 .vercel

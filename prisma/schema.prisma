@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+model User {
+  id         String    @id @default(cuid())
+  email      String    @unique
+  password   String
+  name       String
+  role       Role      @default(VENDOR)
+  isActive   Boolean   @default(true)
+  vendor     Vendor?   @relation(fields: [vendorId], references: [id])
+  vendorId   String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  auditLogs  AuditLog[]
+}
+
+model Vendor {
+  id            String        @id @default(cuid())
+  name          String
+  email         String        @unique
+  phone         String?
+  address       String?
+  gstin         String?
+  bankName      String?
+  accountNumber String?
+  ifsc          String?
+  notes         String?
+  isActive      Boolean       @default(true)
+  users         User[]
+  transactions  Transaction[]
+  sourceFiles   SourceFile[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Transaction {
+  id              String      @id @default(cuid())
+  type            TxType      // PAYIN | PAYOUT
+  amount          Float
+  date            DateTime
+  description     String?
+  reference       String?
+  bankName        String?
+  accountNumber   String?
+  balance         Float?
+  category        String?
+  status          TxStatus    @default(CONFIRMED)
+  rowIndex        Int?        // original row number in source file
+  cellColor       String?     // hex color of the row/cell in source file if present
+  rawData         Json?       // full raw row as JSON from parse
+  vendor          Vendor?     @relation(fields: [vendorId], references: [id])
+  vendorId        String?     // null = admin's own transaction
+  sourceFile      SourceFile? @relation(fields: [sourceFileId], references: [id])
+  sourceFileId    String?
+  createdBy       String      // user id who uploaded or created
+  updatedBy       String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([vendorId])
+  @@index([type])
+  @@index([date])
+  @@index([sourceFileId])
+  @@index([vendorId, type])
+  @@index([vendorId, type, status])
+}
+
+model SourceFile {
+  id              String        @id @default(cuid())
+  fileName        String
+  fileType        FileType      // PDF | XLSX | XLS | CSV
+  fileUrl         String        // stored path or S3 URL
+  fileSize        Int
+  vendor          Vendor?       @relation(fields: [vendorId], references: [id])
+  vendorId        String?
+  uploadedBy      String        // user id
+  status          FileStatus    @default(PROCESSING)
+  totalRows       Int?
+  parsedRows      Int?
+  errorLog        String?
+  transactions    Transaction[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  action      String    // UPLOAD | CREATE | UPDATE | DELETE | LOGIN | EXPORT
+  entity      String    // Transaction | Vendor | SourceFile | User
+  entityId    String
+  actorId     String
+  actorName   String
+  actorRole   String
+  before      Json?
+  after       Json?
+  ipAddress   String?
+  user        User      @relation(fields: [actorId], references: [id])
+  createdAt   DateTime  @default(now())
+}
+
+enum Role {
+  ADMIN
+  VENDOR
+}
+
+enum TxType {
+  PAYIN
+  PAYOUT
+}
+
+enum TxStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+enum FileType {
+  PDF
+  XLSX
+  XLS
+  CSV
+}
+
+enum FileStatus {
+  PROCESSING
+  DONE
+  ERROR
+}
