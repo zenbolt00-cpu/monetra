@@ -20,6 +20,9 @@ import {
   ArrowDown,
   FileText,
   Upload,
+  Search,
+  Hash,
+  Calendar,
 } from "lucide-react";
 
 interface Transaction {
@@ -46,7 +49,7 @@ interface TransactionTableProps {
   onDelete?: (txId: string) => void;
 }
 
-type SortKey = "date" | "amount" | "description" | "type";
+type SortKey = "date" | "amount" | "description" | "type" | "reference";
 type SortDir = "asc" | "desc";
 
 export default function TransactionTable({
@@ -76,14 +79,14 @@ export default function TransactionTable({
       (tx) =>
         tx.description?.toLowerCase().includes(search.toLowerCase()) ||
         tx.reference?.toLowerCase().includes(search.toLowerCase()) ||
-        tx.vendor?.name?.toLowerCase().includes(search.toLowerCase())
+        tx.vendor?.name?.toLowerCase().includes(search.toLowerCase()) ||
+        String(tx.amount).includes(search)
     )
     .sort((a, b) => {
       let cmp = 0;
       switch (sortKey) {
         case "date":
-          cmp =
-            new Date(a.date).getTime() - new Date(b.date).getTime();
+          cmp = new Date(a.date).getTime() - new Date(b.date).getTime();
           break;
         case "amount":
           cmp = a.amount - b.amount;
@@ -94,18 +97,23 @@ export default function TransactionTable({
         case "type":
           cmp = a.type.localeCompare(b.type);
           break;
+        case "reference":
+          cmp = (a.reference || "").localeCompare(b.reference || "");
+          break;
       }
       return sortDir === "asc" ? cmp : -cmp;
     });
 
   const totalAmount = filtered.reduce((sum, tx) => sum + tx.amount, 0);
+  const payinCount = filtered.filter((tx) => tx.type === "PAYIN").length;
+  const payoutCount = filtered.filter((tx) => tx.type === "PAYOUT").length;
 
   const SortIcon = ({ col }: { col: SortKey }) => {
     if (sortKey !== col) return null;
     return sortDir === "asc" ? (
-      <ArrowUp className="w-3 h-3 inline ml-1" />
+      <ArrowUp className="w-3 h-3 inline ml-0.5 text-primary" />
     ) : (
-      <ArrowDown className="w-3 h-3 inline ml-1" />
+      <ArrowDown className="w-3 h-3 inline ml-0.5 text-primary" />
     );
   };
 
@@ -117,15 +125,14 @@ export default function TransactionTable({
   if (transactions.length === 0 && !search) {
     return (
       <div className="glass-card p-12 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-          <Upload className="w-8 h-8 text-primary opacity-60" />
+        <div className="w-16 h-16 rounded-2xl bg-primary/[0.06] flex items-center justify-center mx-auto mb-4">
+          <Upload className="w-8 h-8 text-primary opacity-40" />
         </div>
-        <h3 className="text-lg font-bold text-[#1d1d1f] mb-2">
-          No records found
+        <h3 className="text-lg font-bold text-[#1d1d1f] mb-2 tracking-tight">
+          No records yet
         </h3>
         <p className="text-sm text-[#86868b] max-w-md mx-auto">
-          Upload a file or add an entry manually to see transaction records
-          here.
+          Upload a document or add an entry manually to see transaction records here.
         </p>
       </div>
     );
@@ -133,71 +140,91 @@ export default function TransactionTable({
 
   return (
     <div className="space-y-4">
+      {/* Search & Filter Bar */}
       <div className="flex items-center justify-between gap-4">
-        <input
-          type="text"
-          placeholder="Filter records..."
-          className="glass-input px-4 py-2 text-sm w-full max-w-sm"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <div className="text-[#86868b] text-sm whitespace-nowrap">
-          Showing {filtered.length} of {transactions.length} records
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#86868b]" />
+          <input
+            type="text"
+            placeholder="Search by description, UTR, or amount..."
+            className="glass-input pl-9 pr-4 py-2 text-sm w-[320px]"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-3 text-xs text-[#86868b]">
+          <span className="glass-pill px-3 py-1.5 text-[11px] font-medium">
+            {filtered.length} records
+          </span>
+          {payinCount > 0 && (
+            <span className="glass-pill px-3 py-1.5 text-[11px] font-medium text-ios-green">
+              ↓ {payinCount} pay-in
+            </span>
+          )}
+          {payoutCount > 0 && (
+            <span className="glass-pill px-3 py-1.5 text-[11px] font-medium text-ios-red">
+              ↑ {payoutCount} payout
+            </span>
+          )}
         </div>
       </div>
 
+      {/* Table */}
       <div className="glass-card overflow-hidden border-black/5">
         <div className="overflow-x-auto">
           <Table>
-            <TableHeader className="bg-black/5">
+            <TableHeader className="bg-black/[0.03]">
               <TableRow className="hover:bg-transparent border-black/5">
                 <TableHead
-                  className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
                   onClick={() => handleSort("date")}
                 >
-                  Date
-                  <SortIcon col="date" />
+                  <div className="flex items-center gap-1">
+                    <Calendar className="w-3 h-3" /> Date <SortIcon col="date" />
+                  </div>
                 </TableHead>
                 {showVendor && (
-                  <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider">
+                  <TableHead className="caption-text">
                     Vendor
                   </TableHead>
                 )}
                 <TableHead
-                  className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
                   onClick={() => handleSort("description")}
                 >
-                  Description
-                  <SortIcon col="description" />
-                </TableHead>
-                <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider">
-                  Reference
+                  Description <SortIcon col="description" />
                 </TableHead>
                 <TableHead
-                  className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider text-right cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  onClick={() => handleSort("reference")}
+                >
+                  <div className="flex items-center gap-1">
+                    <Hash className="w-3 h-3" /> UTR / Reference <SortIcon col="reference" />
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="caption-text text-right cursor-pointer hover:text-[#1d1d1f] transition-colors"
                   onClick={() => handleSort("amount")}
                 >
-                  Amount
-                  <SortIcon col="amount" />
+                  Amount <SortIcon col="amount" />
                 </TableHead>
                 <TableHead
-                  className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
                   onClick={() => handleSort("type")}
                 >
-                  Type
-                  <SortIcon col="type" />
+                  Type <SortIcon col="type" />
                 </TableHead>
-                <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider">
+                <TableHead className="caption-text">
                   Status
                 </TableHead>
-                <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider">
+                <TableHead className="caption-text text-center">
                   Color
                 </TableHead>
-                <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider">
+                <TableHead className="caption-text">
                   Source
                 </TableHead>
                 {(allowEdit || allowDelete) && (
-                  <TableHead className="text-[#86868b] font-bold uppercase text-[10px] tracking-wider text-center">
+                  <TableHead className="caption-text text-center">
                     Actions
                   </TableHead>
                 )}
@@ -207,17 +234,17 @@ export default function TransactionTable({
               {filtered.map((tx) => (
                 <TableRow
                   key={tx.id}
-                  className="hover:bg-black/5 border-black/5 group transition-colors glass-table-row"
+                  className="hover:bg-primary/[0.02] border-black/5 group transition-colors glass-table-row"
                   style={{
                     borderLeft: tx.cellColor
-                      ? `4px solid ${tx.cellColor}`
+                      ? `3px solid ${tx.cellColor}`
                       : undefined,
                     backgroundColor: tx.cellColor
-                      ? hexToRgba(tx.cellColor, 0.08)
+                      ? hexToRgba(tx.cellColor, 0.05)
                       : undefined,
                   }}
                 >
-                  <TableCell className="text-xs text-[#424245]">
+                  <TableCell className="text-xs text-[#424245] whitespace-nowrap">
                     {formatDate(tx.date)}
                   </TableCell>
                   {showVendor && (
@@ -231,16 +258,22 @@ export default function TransactionTable({
                   >
                     {tx.description}
                   </TableCell>
-                  <TableCell className="text-xs text-[#86868b]">
-                    {tx.reference || "-"}
+                  <TableCell className="text-xs">
+                    {tx.reference ? (
+                      <span className="font-mono text-[11px] font-semibold text-primary tracking-wide">
+                        {tx.reference}
+                      </span>
+                    ) : (
+                      <span className="text-[#c7c7cc] text-[10px] italic">—</span>
+                    )}
                   </TableCell>
                   <TableCell
                     className={cn(
-                      "text-xs font-bold text-right",
+                      "text-sm font-bold text-right tabular-nums tracking-tight",
                       tx.type === "PAYIN" ? "text-ios-green" : "text-ios-red"
                     )}
                   >
-                    {tx.type === "PAYOUT" ? "-" : ""}
+                    {tx.type === "PAYOUT" ? "−" : "+"}
                     {formatCurrency(tx.amount)}
                   </TableCell>
                   <TableCell>
@@ -249,39 +282,39 @@ export default function TransactionTable({
                   <TableCell>
                     <StatusBadge status={tx.status} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="text-center">
                     {tx.cellColor ? (
                       <div
-                        className="w-3 h-3 rounded-full border border-black/10"
+                        className="w-3.5 h-3.5 rounded-full border border-black/10 mx-auto shadow-sm"
                         style={{ backgroundColor: tx.cellColor }}
-                        title={`Original source color: ${tx.cellColor}`}
+                        title={`Source color: ${tx.cellColor}`}
                       />
                     ) : (
-                      <div className="w-3 h-3 rounded-full border border-black/5" />
+                      <div className="w-3.5 h-3.5 rounded-full border border-black/[0.04] mx-auto" />
                     )}
                   </TableCell>
                   <TableCell>
                     {tx.sourceFile?.fileName ? (
                       <span
-                        className="text-[10px] text-primary hover:underline cursor-pointer truncate max-w-[100px] block"
+                        className="text-[10px] font-medium text-primary hover:underline cursor-pointer truncate max-w-[100px] block"
                         title={tx.sourceFile.fileName}
                       >
                         {tx.sourceFile.fileName}
                       </span>
                     ) : (
-                      <span className="text-[10px] text-[#86868b]">
+                      <span className="text-[10px] text-[#c7c7cc]">
                         Manual
                       </span>
                     )}
                   </TableCell>
                   {(allowEdit || allowDelete) && (
                     <TableCell>
-                      <div className="flex items-center justify-center gap-2 relative">
+                      <div className="flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity relative">
                         {allowEdit && (
                           <button
                             onClick={() => onEdit?.(tx)}
-                            className="p-1.5 rounded-lg glass hover:bg-primary/10 hover:text-primary transition-colors"
-                            title="Edit entry"
+                            className="p-1.5 rounded-lg glass-button hover:bg-primary/10 hover:text-primary transition-colors"
+                            title="Edit"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
@@ -294,8 +327,8 @@ export default function TransactionTable({
                                   deletePopover === tx.id ? null : tx.id
                                 )
                               }
-                              className="p-1.5 rounded-lg glass hover:bg-ios-red/10 hover:text-ios-red transition-colors"
-                              title="Delete entry"
+                              className="p-1.5 rounded-lg glass-button hover:bg-ios-red/10 hover:text-ios-red transition-colors"
+                              title="Delete"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -321,20 +354,20 @@ export default function TransactionTable({
                     }
                     className="h-32 text-center text-[#86868b] italic"
                   >
-                    No records found matching your criteria.
+                    No records match your search.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
-            <TableFooter className="bg-black/5 border-t border-black/10">
+            <TableFooter className="bg-black/[0.03] border-t border-black/[0.06]">
               <TableRow>
                 <TableCell
                   colSpan={showVendor ? 4 : 3}
                   className="text-xs font-bold text-[#1d1d1f] uppercase tracking-wider"
                 >
-                  Total for current filter
+                  Total
                 </TableCell>
-                <TableCell className="text-xs font-bold text-right text-[#1d1d1f] border-primary/10 bg-primary/5">
+                <TableCell className="text-sm font-bold text-right text-[#1d1d1f] tabular-nums tracking-tight">
                   {formatCurrency(totalAmount)}
                 </TableCell>
                 <TableCell

@@ -7,7 +7,15 @@ import ParsePreviewTable from "@/components/ParsePreviewTable";
 import { ParsedRow } from "@/lib/fileProcessor";
 import toast from "react-hot-toast";
 import { useRouter } from "next/navigation";
-import { Info } from "lucide-react";
+import {
+  Info,
+  Shield,
+  Zap,
+  FileSearch,
+  Sparkles,
+  Upload,
+  CheckCircle2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function VendorUploadPage() {
@@ -56,7 +64,7 @@ export default function VendorUploadPage() {
         rows: data.parsedData.rows,
         file: data.file,
       });
-      toast.success("Record extracted successfully!");
+      toast.success(`Extracted ${data.parsedData.rows.length} records`);
     } catch (error: any) {
       toast.error(error.message || "Extraction failed");
     } finally {
@@ -81,7 +89,7 @@ export default function VendorUploadPage() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Import failed");
 
-      toast.success(`Successfully uploaded ${data.count} records`);
+      toast.success(`${data.count} records uploaded successfully`);
       router.push("/vendor/payin");
     } catch (error: any) {
       toast.error(error.message || "Failed to finalize upload");
@@ -91,46 +99,62 @@ export default function VendorUploadPage() {
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-[#1d1d1f]">
-          Upload Documents
-        </h1>
-        <p className="text-[#86868b] mt-1">
-          Upload your payment records to sync with the main ledger.
-        </p>
+    <div className="space-y-8 max-w-5xl mx-auto pb-12">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-2xl ios-blue-gradient flex items-center justify-center">
+          <Upload className="w-5 h-5 text-white" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f]">
+            Upload Documents
+          </h1>
+          <p className="text-sm text-[#86868b]">
+            Upload payment records to sync with the main ledger.
+          </p>
+        </div>
       </div>
 
       {!parsedData ? (
         <div className="space-y-6 animate-spring-entrance">
-          <div className="glass-card p-8 space-y-6">
+          <div className="glass-card p-8 space-y-8">
+            {/* Transaction Type Segmented Control */}
             <div className="space-y-3">
-              <label className="text-[#86868b] uppercase text-[10px] font-bold tracking-widest">
-                Transaction Type
+              <label className="caption-text flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5" />
+                Transaction Classification
               </label>
-              <div className="flex p-1 bg-black/5 rounded-2xl border border-black/5 max-w-md">
-                {["AUTO", "PAYIN", "PAYOUT"].map((type) => (
+              <div className="flex p-1.5 bg-black/[0.03] rounded-2xl border border-black/[0.04] max-w-md">
+                {[
+                  { value: "AUTO", label: "Auto-Detect", icon: Sparkles },
+                  { value: "PAYIN", label: "Pay-in", icon: CheckCircle2 },
+                  { value: "PAYOUT", label: "Payout", icon: CheckCircle2 },
+                ].map(({ value, label, icon: Icon }) => (
                   <button
-                    key={type}
-                    onClick={() => setTxType(type)}
+                    key={value}
+                    onClick={() => setTxType(value)}
                     className={cn(
-                      "flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all",
-                      txType === type
-                        ? "bg-white text-primary shadow-sm"
+                      "flex-1 py-2.5 text-[11px] font-bold uppercase tracking-wide rounded-xl transition-all duration-300 flex items-center justify-center gap-1.5",
+                      txType === value
+                        ? "bg-white text-primary shadow-sm border border-white/80"
                         : "text-[#86868b] hover:text-[#424245]"
                     )}
                   >
-                    {type === "AUTO"
-                      ? "Detect"
-                      : type === "PAYIN"
-                        ? "Pay-in"
-                        : "Payout"}
+                    <Icon className="w-3 h-3" />
+                    {label}
                   </button>
                 ))}
               </div>
+              <p className="text-[11px] text-[#86868b]">
+                Auto-detect analyzes each row to determine pay-in or payout automatically.
+              </p>
             </div>
 
-            <div className="flex items-center gap-4 p-4 rounded-2xl bg-primary/5 border border-primary/10">
+            {/* Divider */}
+            <div className="h-px bg-gradient-to-r from-transparent via-black/[0.06] to-transparent" />
+
+            {/* Info Banner */}
+            <div className="flex items-center gap-4 p-5 rounded-2xl bg-primary/[0.04] border border-primary/[0.08]">
               <Info className="w-5 h-5 text-primary shrink-0" />
               <p className="text-sm text-[#424245] leading-relaxed font-medium">
                 Records will be automatically extracted from your PDF
@@ -140,29 +164,53 @@ export default function VendorUploadPage() {
               </p>
             </div>
 
+            {/* Upload Zone */}
             <FileUploadZone
               onFileSelected={handleFileSet}
               onParseClick={handleUpload}
               showParseButton={true}
               isLoading={isUploading}
             />
+          </div>
 
-            <div className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="glass p-4 rounded-xl border-black/5">
-                <h4 className="text-[10px] uppercase font-bold tracking-widest text-[#86868b] mb-2">
-                  Supported Files
+          {/* Features Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-blue/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <FileSearch className="w-5 h-5 text-ios-blue" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
+                  Supported Formats
                 </h4>
-                <p className="text-xs text-[#424245]">
-                  Bank Statements (PDF), Ledger Sheets (XLSX), CSV Exports.
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Bank Statements (PDF), Ledger Sheets (XLSX), and CSV Exports from any source.
                 </p>
               </div>
-              <div className="glass p-4 rounded-xl border-black/5">
-                <h4 className="text-[10px] uppercase font-bold tracking-widest text-[#86868b] mb-2">
+            </div>
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-green/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <Shield className="w-5 h-5 text-ios-green" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
                   Faithful Capture
                 </h4>
-                <p className="text-xs text-[#424245]">
-                  Colors and row structures are preserved exactly from your
-                  source.
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Colors, UTR numbers, and row structures are preserved exactly from your source.
+                </p>
+              </div>
+            </div>
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-yellow/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <Zap className="w-5 h-5 text-ios-yellow" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
+                  Instant Processing
+                </h4>
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Files are processed in seconds with automatic duplicate detection and validation.
                 </p>
               </div>
             </div>
@@ -170,13 +218,18 @@ export default function VendorUploadPage() {
         </div>
       ) : (
         <div className="animate-spring-entrance">
-          <div className="mb-4">
-            <h2 className="text-xl font-bold text-[#1d1d1f]">
-              Review Extracted Records
-            </h2>
-            <p className="text-xs text-[#86868b]">
-              Please verify that all amounts and dates are correctly detected.
-            </p>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-ios-green/10 flex items-center justify-center">
+              <FileSearch className="w-4 h-4 text-ios-green" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-[#1d1d1f]">
+                Review Extracted Records
+              </h2>
+              <p className="text-xs text-[#86868b]">
+                Verify amounts, dates, and references before submitting to admin.
+              </p>
+            </div>
           </div>
           <ParsePreviewTable
             rows={parsedData.rows}

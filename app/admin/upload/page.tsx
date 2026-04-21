@@ -11,10 +11,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
 import toast from "react-hot-toast";
 import { useRouter } from "next/navigation";
-import { Info } from "lucide-react";
+import {
+  Info,
+  Shield,
+  Zap,
+  FileSearch,
+  ArrowRight,
+  Sparkles,
+  Building2,
+  UserCircle,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function AdminUploadPage() {
   const router = useRouter();
@@ -66,7 +75,7 @@ export default function AdminUploadPage() {
         file: data.file,
       });
       toast.success(
-        `File parsed successfully! ${data.parsedData.rows.length} rows detected.`
+        `Extracted ${data.parsedData.rows.length} records successfully`
       );
     } catch (error: any) {
       toast.error(error.message || "Failed to upload file");
@@ -93,7 +102,7 @@ export default function AdminUploadPage() {
       if (!res.ok || data.error) throw new Error(data.error || "Import failed");
 
       toast.success(
-        `Successfully imported ${data.count} transactions`
+        `${data.count} transactions imported to ledger`
       );
       router.push(
         selectedVendor === "admin" ? "/admin/my-payin" : "/admin/payin"
@@ -105,115 +114,196 @@ export default function AdminUploadPage() {
     }
   };
 
+  const selectedVendorName =
+    selectedVendor === "admin"
+      ? "Admin (Own Records)"
+      : vendors.find((v) => v.id === selectedVendor)?.name || "Select...";
+
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-[#1d1d1f]">
-          Upload Financial Records
-        </h1>
-        <p className="text-[#86868b] mt-1">
-          Upload PDF statement or Excel sheet to extract payment records.
-        </p>
+    <div className="space-y-8 max-w-5xl mx-auto pb-12">
+      {/* Header */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl ios-blue-gradient flex items-center justify-center">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f]">
+              Document Intelligence
+            </h1>
+            <p className="text-[#86868b] text-sm">
+              Upload bank statements or ledger sheets — Monetra extracts every detail automatically.
+            </p>
+          </div>
+        </div>
       </div>
 
       {!parsedData ? (
-        <div className="space-y-6">
-          <div className="glass-card p-8 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-6 animate-spring-entrance">
+          {/* Configuration Card */}
+          <div className="glass-card p-8 space-y-8">
+            {/* Account Selection */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="space-y-3">
-                <Label className="text-[#86868b] uppercase text-[10px] font-bold tracking-widest">
-                  Select Account / Vendor
-                </Label>
+                <label className="caption-text flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5" />
+                  Account / Vendor
+                </label>
                 <Select
-                  onValueChange={(val) => setSelectedVendor(val || "admin")}
+                  onValueChange={(val) => setSelectedVendor(val)}
                   value={selectedVendor}
                 >
-                  <SelectTrigger className="glass-input h-12 border-black/5 text-[#1d1d1f]">
-                    <SelectValue placeholder="Who does this file belong to?" />
+                  <SelectTrigger className="glass-input h-12 border-black/5 text-[#1d1d1f] w-full">
+                    <SelectValue placeholder="Select account..." />
                   </SelectTrigger>
-                  <SelectContent className="glass-modal border-black/5 text-[#1d1d1f]">
+                  <SelectContent className="glass-modal border-white/60 z-[100]">
                     <SelectItem
                       value="admin"
-                      className="focus:bg-primary/10 focus:text-primary"
+                      className="focus:bg-primary/10 focus:text-primary rounded-lg"
                     >
-                      Admin (Own Records)
+                      <div className="flex items-center gap-2">
+                        <UserCircle className="w-4 h-4 text-primary" />
+                        Admin (Own Records)
+                      </div>
                     </SelectItem>
-                    {vendors.map((vendor) => (
-                      <SelectItem
-                        key={vendor.id}
-                        value={vendor.id}
-                        className="focus:bg-primary/10 focus:text-primary"
-                      >
-                        {vendor.name}
-                      </SelectItem>
-                    ))}
+                    {vendors.length > 0 && (
+                      <>
+                        {vendors.map((vendor) => (
+                          <SelectItem
+                            key={vendor.id}
+                            value={vendor.id}
+                            className="focus:bg-primary/10 focus:text-primary rounded-lg"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Building2 className="w-4 h-4 text-[#86868b]" />
+                              {vendor.name}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-[#86868b]">
+                  {selectedVendor === "admin"
+                    ? "Records will be saved under your admin account."
+                    : `Records will be linked to ${selectedVendorName}.`}
+                </p>
               </div>
 
+              {/* Transaction Type */}
               <div className="space-y-3">
-                <Label className="text-[#86868b] uppercase text-[10px] font-bold tracking-widest">
-                  Transaction Type
-                </Label>
-                <Select
-                  onValueChange={(val) => setTxType(val || "AUTO")}
-                  value={txType}
-                >
-                  <SelectTrigger className="glass-input h-12 border-black/5 text-[#1d1d1f]">
-                    <SelectValue placeholder="Automatic Detection" />
-                  </SelectTrigger>
-                  <SelectContent className="glass-modal border-black/5 text-[#1d1d1f]">
-                    <SelectItem
-                      value="AUTO"
-                      className="focus:bg-primary/10 focus:text-primary"
+                <label className="caption-text flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5" />
+                  Transaction Classification
+                </label>
+                <div className="flex p-1.5 bg-black/[0.03] rounded-2xl border border-black/[0.04]">
+                  {[
+                    { value: "AUTO", label: "Auto-Detect", icon: Sparkles },
+                    { value: "PAYIN", label: "Pay-in", icon: ArrowRight },
+                    { value: "PAYOUT", label: "Payout", icon: ArrowRight },
+                  ].map(({ value, label, icon: Icon }) => (
+                    <button
+                      key={value}
+                      onClick={() => setTxType(value)}
+                      className={cn(
+                        "flex-1 py-2.5 px-3 text-[11px] font-bold uppercase tracking-wide rounded-xl transition-all duration-300 flex items-center justify-center gap-1.5",
+                        txType === value
+                          ? "bg-white text-primary shadow-sm border border-white/80"
+                          : "text-[#86868b] hover:text-[#424245]"
+                      )}
                     >
-                      Automatic Detection
-                    </SelectItem>
-                    <SelectItem
-                      value="PAYIN"
-                      className="focus:bg-primary/10 focus:text-primary"
-                    >
-                      Force Pay-in (Credit)
-                    </SelectItem>
-                    <SelectItem
-                      value="PAYOUT"
-                      className="focus:bg-primary/10 focus:text-primary"
-                    >
-                      Force Payout (Debit)
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                      <Icon className={cn("w-3 h-3", value === "PAYOUT" && txType === value && "rotate-180")} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-[#86868b]">
+                  Auto-detect analyzes each row to determine pay-in or payout.
+                </p>
               </div>
             </div>
 
+            {/* Divider */}
+            <div className="h-px bg-gradient-to-r from-transparent via-black/[0.06] to-transparent" />
+
+            {/* File Upload Zone */}
             <FileUploadZone
               onFileSelected={handleFileSet}
               onParseClick={handleUpload}
               showParseButton={true}
               isLoading={isUploading}
             />
+          </div>
 
-            <div className="flex items-start gap-3 p-4 rounded-2xl bg-primary/5 border border-primary/10">
-              <Info className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-              <p className="text-xs text-[#424245] leading-relaxed">
-                <strong className="text-[#1d1d1f]">Note:</strong> Make sure
-                the file contains tabular data. The engine will automatically
-                detect amounts, dates, and descriptions. You will be able to
-                review all rows before saving.
-              </p>
+          {/* Features Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-blue/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <FileSearch className="w-5 h-5 text-ios-blue" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
+                  Smart Extraction
+                </h4>
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Automatically detects UTR, reference numbers, amounts, dates, and transaction modes from any format.
+                </p>
+              </div>
+            </div>
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-green/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <Shield className="w-5 h-5 text-ios-green" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
+                  Duplicate Detection
+                </h4>
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Cross-references every UTR against the database to flag duplicate entries before import.
+                </p>
+              </div>
+            </div>
+            <div className="glass-card p-5 flex items-start gap-4 group">
+              <div className="w-10 h-10 rounded-xl bg-ios-yellow/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                <Zap className="w-5 h-5 text-ios-yellow" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#1d1d1f] mb-1">
+                  Color Preservation
+                </h4>
+                <p className="text-[11px] text-[#86868b] leading-relaxed">
+                  Preserves cell colors and row structures from your original Excel sheets faithfully.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Info Banner */}
+          <div className="flex items-start gap-3 p-5 rounded-2xl bg-primary/[0.04] border border-primary/[0.08]">
+            <Info className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+            <div className="text-xs text-[#424245] leading-relaxed">
+              <strong className="text-[#1d1d1f]">Supported formats:</strong>{" "}
+              PDF bank statements, XLSX/XLS spreadsheets, and CSV exports.
+              The engine supports all major Indian banks (SBI, HDFC, ICICI, Axis, Kotak, etc.)
+              and UPI/NEFT/RTGS/IMPS transaction references.
             </div>
           </div>
         </div>
       ) : (
         <div className="animate-spring-entrance">
-          <div className="mb-6">
-            <h2 className="text-xl font-bold text-[#1d1d1f]">
-              Review Extracted Records
-            </h2>
-            <p className="text-xs text-[#86868b]">
-              Please verify that all amounts and dates are correctly
-              detected. Toggle types and exclude irrelevant rows.
-            </p>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-ios-green/10 flex items-center justify-center">
+              <FileSearch className="w-4 h-4 text-ios-green" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-[#1d1d1f]">
+                Review Extracted Records
+              </h2>
+              <p className="text-xs text-[#86868b]">
+                Verify amounts, dates, references and types. Toggle or exclude rows before importing.
+              </p>
+            </div>
           </div>
           <ParsePreviewTable
             rows={parsedData.rows}

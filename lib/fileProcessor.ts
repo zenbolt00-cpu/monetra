@@ -2,6 +2,21 @@ import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
 
+// Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
+if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
+  (global as any).DOMMatrix = class DOMMatrix {
+    m11 = 1; m12 = 0; m13 = 0; m14 = 0;
+    m21 = 0; m22 = 1; m23 = 0; m24 = 0;
+    m31 = 0; m32 = 0; m33 = 1; m34 = 0;
+    m41 = 0; m42 = 0; m43 = 0; m44 = 1;
+    constructor(arg?: any) {
+      if (typeof arg === "string") {
+        // Very basic parsing for simple matrix strings if needed
+      }
+    }
+  };
+}
+
 export interface ParsedRow {
   date: Date;
   amount: number;
@@ -15,73 +30,211 @@ export interface ParsedRow {
   category?: string;
   isExcluded: boolean;
   errors?: string[];
+  bankName?: string;
+  accountNumber?: string;
+  time?: string;
+  mode?: string; // NEFT, RTGS, IMPS, UPI etc.
 }
 
+/* ──────────────────────────────────────────────────────────
+ *  Robust Number Parser – handles Indian/intl formats
+ * ────────────────────────────────────────────────────────── */
 function parseNumber(val: any): number {
   if (typeof val === "number") return val;
   if (!val) return NaN;
-  return parseFloat(String(val).replace(/[^0-9.-]+/g, ""));
+  const str = String(val).trim();
+  // Remove currency symbols and spaces
+  const cleaned = str.replace(/[₹$€£¥,\s]+/g, "").replace(/^[(-]+|[)]+$/g, "");
+  const num = parseFloat(cleaned);
+  // Handle parenthetical negatives: (1234.00) → -1234.00
+  if (str.startsWith("(") && str.endsWith(")")) return -Math.abs(num);
+  // Handle trailing minus: 1234.00-
+  if (str.endsWith("-") && !str.startsWith("-")) return -Math.abs(num);
+  return num;
 }
 
-function parseDate(val: any): Date {
-  if (val instanceof Date) return val;
-  if (!val) return new Date();
+/* ──────────────────────────────────────────────────────────
+ *  Date Parser – handles all common banking formats
+ * ────────────────────────────────────────────────────────── */
+const MONTH_NAMES: Record<string, number> = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
 
-  // Try standard JS parsing first
-  const d = new Date(val);
-  if (!isNaN(d.getTime())) return d;
+function parseDate(val: any): Date {
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  if (!val) return new Date();
 
   const str = String(val).trim();
 
-  // Try DD/MM/YYYY or DD-MM-YYYY format
-  const slashParts = str.includes("/") ? str.split("/") : null;
-  const dashParts = !slashParts ? str.split("-") : null;
-  const parts = slashParts || dashParts;
+  // Excel serial date numbers
+  if (/^\d{5}$/.test(str)) {
+    const serial = parseInt(str);
+    const utc = new Date(Date.UTC(1899, 11, 30));
+    utc.setUTCDate(utc.getUTCDate() + serial);
+    return utc;
+  }
 
-  if (parts && parts.length === 3) {
-    const day = parseInt(parts[0]);
-    const month = parseInt(parts[1]) - 1;
-    let year = parseInt(parts[2]);
+  // Try DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1]);
+    const month = parseInt(dmyMatch[2]) - 1;
+    let year = parseInt(dmyMatch[3]);
     if (year < 100) year += 2000;
-
-    if (
-      year > 1900 &&
-      month >= 0 &&
-      month < 12 &&
-      day > 0 &&
-      day <= 31
-    ) {
+    if (year > 1900 && month >= 0 && month < 12 && day > 0 && day <= 31) {
       return new Date(year, month, day);
     }
   }
 
-  // Try DD MMM YYYY (e.g., "12 Apr 2023" or "12-Apr-2023")
-  const monthNames: Record<string, number> = {
-    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-  };
-  const dmy = str.match(
-    /(\d{1,2})\s*[-\s]\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*[-\s]\s*(\d{2,4})/i
+  // Try YYYY-MM-DD (ISO-like)
+  const isoMatch = str.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1]);
+    const month = parseInt(isoMatch[2]) - 1;
+    const day = parseInt(isoMatch[3]);
+    if (year > 1900 && month >= 0 && month < 12 && day > 0 && day <= 31) {
+      return new Date(year, month, day);
+    }
+  }
+
+  // Try DD MMM YYYY or DD-MMM-YYYY or DD/MMM/YYYY (e.g. "12 Apr 2023", "12-Apr-23")
+  const dmyTextMatch = str.match(
+    /(\d{1,2})\s*[/\-.\s]\s*([A-Za-z]{3,9})\s*[/\-.\s]\s*(\d{2,4})/i
   );
-  if (dmy) {
-    const day = parseInt(dmy[1]);
-    const month = monthNames[dmy[2].toLowerCase()];
-    let year = parseInt(dmy[3]);
+  if (dmyTextMatch) {
+    const day = parseInt(dmyTextMatch[1]);
+    const monthName = dmyTextMatch[2].toLowerCase();
+    const month = MONTH_NAMES[monthName];
+    let year = parseInt(dmyTextMatch[3]);
     if (year < 100) year += 2000;
-    if (month !== undefined) {
+    if (month !== undefined && day > 0 && day <= 31) {
       return new Date(year, month, day);
     }
   }
+
+  // Try MMM DD, YYYY (e.g. "Apr 12, 2023")
+  const mdyTextMatch = str.match(
+    /([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{2,4})/i
+  );
+  if (mdyTextMatch) {
+    const monthName = mdyTextMatch[1].toLowerCase();
+    const month = MONTH_NAMES[monthName];
+    const day = parseInt(mdyTextMatch[2]);
+    let year = parseInt(mdyTextMatch[3]);
+    if (year < 100) year += 2000;
+    if (month !== undefined && day > 0 && day <= 31) {
+      return new Date(year, month, day);
+    }
+  }
+
+  // Try DD/MM/YYYY HH:MM:SS (with time)
+  const dateTimeMatch = str.match(
+    /(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
+  );
+  if (dateTimeMatch) {
+    const day = parseInt(dateTimeMatch[1]);
+    const month = parseInt(dateTimeMatch[2]) - 1;
+    let year = parseInt(dateTimeMatch[3]);
+    if (year < 100) year += 2000;
+    const hours = parseInt(dateTimeMatch[4]);
+    const minutes = parseInt(dateTimeMatch[5]);
+    const seconds = dateTimeMatch[6] ? parseInt(dateTimeMatch[6]) : 0;
+    if (year > 1900 && month >= 0 && month < 12 && day > 0 && day <= 31) {
+      return new Date(year, month, day, hours, minutes, seconds);
+    }
+  }
+
+  // Fallback: try standard JS parsing
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d;
 
   return new Date();
 }
 
+/* ──────────────────────────────────────────────────────────
+ *  UTR / Reference Number Extraction Engine
+ *  Handles: UPI, NEFT, RTGS, IMPS, Cheque, Custom Refs
+ * ────────────────────────────────────────────────────────── */
+const UTR_PATTERNS = [
+  // Explicit labeled references: "UTR: XXXX", "REF NO: XXXX" etc.
+  /(?:UTR|UTR\s*(?:NO|NUMBER|ID|#)?|REF|REF\s*(?:NO|NUMBER|ID|#)?|REFERENCE|TRANS(?:ACTION)?\s*(?:NO|NUMBER|ID|#)?|TXN\s*(?:NO|NUMBER|ID|#)?|PAYMENT\s*(?:NO|NUMBER|ID|#)?|INSTRUMENT\s*(?:NO|NUMBER|ID|#)?|RECEIPT\s*(?:NO|NUMBER|ID)?|VOUCHER\s*(?:NO|NUMBER|#)?|CHEQUE\s*(?:NO|NUMBER|#)?|CHQ\s*(?:NO|#)?|CMS\s*(?:REF)?|RRN|ARN)\s*[:.#\-]?\s*([A-Za-z0-9]{6,30})/i,
+
+  // UPI transaction IDs (format: 12-14 digit numbers)
+  /(?:UPI[/-]?)(\d{12,14})/i,
+
+  // NEFT/RTGS/IMPS reference patterns (bank-specific)
+  /(?:NEFT|RTGS|IMPS)[/\-]?([A-Z0-9]{10,22})/i,
+
+  // Standalone long alphanumeric references (12+ chars, not dates or amounts)
+  /\b([A-Z]{2,4}\d{8,18})\b/,  // e.g., UBIN02345678901234
+  /\b(\d{12,16})\b/,  // Pure numeric 12-16 digit refs (UPI/IMPS style)
+];
+
+function extractReference(text: string): string | undefined {
+  if (!text) return undefined;
+
+  for (const pattern of UTR_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const ref = match[1].trim();
+      // Validate: not a date, not too short, not all zeros
+      if (
+        ref.length >= 6 &&
+        !/^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}$/.test(ref) &&
+        !/^0+$/.test(ref)
+      ) {
+        return ref;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/* ──────────────────────────────────────────────────────────
+ *  Transaction Mode Detection
+ * ────────────────────────────────────────────────────────── */
+function detectTransactionMode(text: string): string | undefined {
+  const lower = text.toLowerCase();
+  if (lower.includes("upi")) return "UPI";
+  if (lower.includes("imps")) return "IMPS";
+  if (lower.includes("neft")) return "NEFT";
+  if (lower.includes("rtgs")) return "RTGS";
+  if (lower.includes("cheque") || lower.includes("chq")) return "CHEQUE";
+  if (lower.includes("cash")) return "CASH";
+  if (lower.includes("ach")) return "ACH";
+  if (lower.includes("dd") || lower.includes("demand draft")) return "DD";
+  if (lower.includes("wire")) return "WIRE";
+  return undefined;
+}
+
+/* ──────────────────────────────────────────────────────────
+ *  Time Extraction from text
+ * ────────────────────────────────────────────────────────── */
+function extractTime(text: string): string | undefined {
+  const timeMatch = text.match(/(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)/i);
+  return timeMatch ? timeMatch[1].trim() : undefined;
+}
+
+/* ──────────────────────────────────────────────────────────
+ *  EXCEL PROCESSOR
+ * ────────────────────────────────────────────────────────── */
 export async function processExcel(
   buffer: Buffer,
   fileType: FileType,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  // Read workbook with cell styles enabled for color extraction
   const workbook = XLSX.read(buffer, {
     type: "buffer",
     cellStyles: true,
@@ -92,7 +245,6 @@ export async function processExcel(
   const sheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
 
-  // Convert to JSON with header row
   const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet, {
     header: 1,
     defval: "",
@@ -101,16 +253,38 @@ export async function processExcel(
 
   if (jsonData.length < 1) return { rows: [], headers: [] };
 
-  const headers = (jsonData[0] as string[]).map((h) =>
+  // Smart header detection: skip leading empty rows and find the actual header row
+  let headerRowIndex = 0;
+  for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
+    const row = jsonData[i];
+    if (!row || row.length === 0) continue;
+    const nonEmptyCells = row.filter((cell: any) => String(cell || "").trim().length > 0);
+    if (nonEmptyCells.length >= 3) {
+      // Check if this looks like a header row (contains recognizable column names)
+      const rowText = row.map((c: any) => String(c || "").toLowerCase().trim()).join(" ");
+      const headerKeywords = ["date", "amount", "credit", "debit", "description", "narration", "balance", "ref", "utr", "particulars", "withdrawal", "deposit"];
+      const matchCount = headerKeywords.filter(k => rowText.includes(k)).length;
+      if (matchCount >= 2) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+  }
+
+  const headers = (jsonData[headerRowIndex] as string[]).map((h) =>
     String(h || "").trim()
   );
   const mapping = detectColumns(headers);
 
   const rows: ParsedRow[] = [];
 
-  for (let i = 1; i < jsonData.length; i++) {
+  for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
     const rawRow = jsonData[i];
     if (!rawRow || rawRow.length === 0) continue;
+
+    // Skip rows that are all empty
+    const nonEmpty = rawRow.filter((cell: any) => String(cell || "").trim().length > 0);
+    if (nonEmpty.length < 2) continue;
 
     const rowData: any = {};
     headers.forEach((header, index) => {
@@ -119,7 +293,6 @@ export async function processExcel(
 
     // Color extraction from cell styles
     let cellColor: string | undefined;
-    // Check multiple columns for color
     const colsToCheck = [
       mapping.credit,
       mapping.debit,
@@ -154,7 +327,6 @@ export async function processExcel(
     let type: TxType;
 
     if (mapping.credit && mapping.debit) {
-      // Separate Credit/Debit columns (common in bank statements)
       const creditVal = parseNumber(rowData[mapping.credit]);
       const debitVal = parseNumber(rowData[mapping.debit]);
 
@@ -171,46 +343,32 @@ export async function processExcel(
         amount = Math.abs(debitVal);
         type = TxType.PAYOUT;
       } else {
-        continue; // Skip rows with no amount
+        continue;
       }
     } else if (mapping.amount) {
-      // Single amount column
       const rawAmount = parseNumber(rowData[mapping.amount]);
       if (isNaN(rawAmount) || rawAmount === 0) continue;
 
       amount = Math.abs(rawAmount);
 
-      // Check for a type column
       if (mapping.type) {
         const typeVal = String(rowData[mapping.type] || "")
           .toLowerCase()
           .trim();
-        if (
-          typeVal === "cr" ||
-          typeVal === "credit" ||
-          typeVal === "c" ||
-          typeVal === "payin"
-        ) {
+        if (["cr", "credit", "c", "payin", "pay-in", "receipt", "received"].includes(typeVal)) {
           type = TxType.PAYIN;
-        } else if (
-          typeVal === "dr" ||
-          typeVal === "debit" ||
-          typeVal === "d" ||
-          typeVal === "payout"
-        ) {
+        } else if (["dr", "debit", "d", "payout", "pay-out", "payment", "paid"].includes(typeVal)) {
           type = TxType.PAYOUT;
         } else {
           type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
         }
       } else {
-        // Determine from sign
         type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
       }
     } else {
-      continue; // No amount column found
+      continue;
     }
 
-    // If user explicitly specified a type override, use it
     if (txTypeOverride) {
       type = txTypeOverride;
     }
@@ -221,12 +379,31 @@ export async function processExcel(
     const description = String(
       rowData[mapping.description || ""] || "No description"
     ).trim();
-    const reference = String(
-      rowData[mapping.reference || ""] || ""
-    ).trim();
+
+    // Enhanced reference extraction: try column first, then scan description
+    let reference = String(rowData[mapping.reference || ""] || "").trim();
+    if (!reference || reference.length < 4) {
+      // Try to extract from description text
+      const descRef = extractReference(description);
+      if (descRef) reference = descRef;
+
+      // Also scan across all row values for UTR-like patterns
+      if (!reference) {
+        const allText = Object.values(rowData).map(v => String(v || "")).join(" ");
+        const allRef = extractReference(allText);
+        if (allRef) reference = allRef;
+      }
+    }
+
     const balance = mapping.balance
       ? parseNumber(rowData[mapping.balance])
       : undefined;
+
+    // Detect transaction mode from description
+    const mode = detectTransactionMode(description);
+
+    // Extract time if present
+    const time = extractTime(String(dateValue || "") + " " + description);
 
     rows.push({
       date: isNaN(date.getTime()) ? new Date() : date,
@@ -239,244 +416,259 @@ export async function processExcel(
       rowIndex: i + 1,
       rawData: rowData,
       isExcluded: false,
+      mode,
+      time,
     });
   }
 
   return { rows, headers };
 }
 
+/* ──────────────────────────────────────────────────────────
+ *  PDF PROCESSOR – Enhanced multi-strategy extraction
+ * ────────────────────────────────────────────────────────── */
 export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  // pdf-parse v2 uses a class-based API
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: buffer });
+  let textContent = "";
 
-  const headers = ["Date", "Description", "Credit", "Debit", "Balance"];
-  const rows: ParsedRow[] = [];
-
-  // Try table extraction first (structured PDFs)
+  // Strategy 1: Use pdfjs-dist for reliable text extraction
   try {
-    const tableResult = await parser.getTable();
-    if (tableResult && tableResult.pages) {
-      for (const page of tableResult.pages) {
-        if (!page.tables || page.tables.length === 0) continue;
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-        for (const table of page.tables) {
-          if (!Array.isArray(table) || table.length < 2) continue;
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+    });
 
-          // Detect columns from the first row (header row)
-          const headerRow = table[0].map((cell: any) =>
-            String(cell || "").trim()
-          );
-          const mapping = (await import("./columnDetector")).detectColumns(
-            headerRow
-          );
+    const pdf = await loadingTask.promise;
+    const pages: string[] = [];
 
-          for (let i = 1; i < table.length; i++) {
-            const row = table[i];
-            if (!row || row.length === 0) continue;
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const content = await page.getTextContent();
 
-            const rowData: Record<string, string> = {};
-            headerRow.forEach((h: string, idx: number) => {
-              rowData[h] = String(row[idx] || "").trim();
-            });
+      // Sort items by Y position (top to bottom) then X position (left to right)
+      const items = content.items as any[];
+      const lines: Map<number, { x: number; text: string }[]> = new Map();
 
-            // Extract data using column mapping
-            let amount: number;
-            let type: TxType;
+      for (const item of items) {
+        if (!item.str || item.str.trim().length === 0) continue;
+        // Round Y coordinate to group items on the same line (within 3px tolerance)
+        const yKey = Math.round(item.transform[5] / 3) * 3;
+        if (!lines.has(yKey)) lines.set(yKey, []);
+        lines.get(yKey)!.push({
+          x: item.transform[4],
+          text: item.str,
+        });
+      }
 
-            if (mapping.credit && mapping.debit) {
-              const creditVal = parseNumber(rowData[mapping.credit]);
-              const debitVal = parseNumber(rowData[mapping.debit]);
-              if (!isNaN(creditVal) && creditVal > 0) {
-                amount = creditVal;
-                type = TxType.PAYIN;
-              } else if (!isNaN(debitVal) && debitVal > 0) {
-                amount = debitVal;
-                type = TxType.PAYOUT;
-              } else {
-                continue;
-              }
-            } else if (mapping.amount) {
-              const rawAmount = parseNumber(rowData[mapping.amount]);
-              if (isNaN(rawAmount) || rawAmount === 0) continue;
-              amount = Math.abs(rawAmount);
-              type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
-            } else {
-              continue;
-            }
+      // Sort lines by Y (descending since PDF coordinates are bottom-up)
+      const sortedYKeys = Array.from(lines.keys()).sort((a, b) => b - a);
 
-            if (txTypeOverride) type = txTypeOverride;
-
-            const dateValue = rowData[mapping.date || ""];
-            const date = parseDate(dateValue);
-            if (isNaN(date.getTime())) continue;
-
-            const description = String(
-              rowData[mapping.description || ""] || "No description"
-            ).trim();
-            const reference = String(
-              rowData[mapping.reference || ""] || ""
-            ).trim();
-            const balance = mapping.balance
-              ? parseNumber(rowData[mapping.balance])
-              : undefined;
-
-            rows.push({
-              date,
-              amount,
-              description,
-              reference: reference || undefined,
-              type,
-              balance: balance && !isNaN(balance) ? balance : undefined,
-              cellColor: undefined,
-              rowIndex: rows.length + 1,
-              rawData: rowData,
-              isExcluded: false,
-            });
-          }
-        }
+      for (const yKey of sortedYKeys) {
+        const lineItems = lines.get(yKey)!.sort((a, b) => a.x - b.x);
+        const lineText = lineItems.map((item) => item.text).join(" ");
+        pages.push(lineText);
       }
     }
-  } catch (tableErr) {
-    // Table extraction is optional — fall through to text extraction
-    console.log("[PDF] Table extraction unavailable, using text extraction");
+
+    textContent = pages.join("\n");
+  } catch (pdfjsErr) {
+    console.log("[PDF] pdfjs-dist extraction failed, trying pdf-parse fallback:", pdfjsErr);
+
+    // Strategy 2: Fallback to pdf-parse v2 (class-based API)
+    try {
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new PDFParse({ data: buffer });
+      const textResult = await parser.getText();
+      textContent = textResult.text || "";
+      await parser.destroy().catch(() => {});
+    } catch (parseErr) {
+      console.error("[PDF] All extraction strategies failed:", parseErr);
+      return { rows: [], headers: ["Date", "Description", "Reference", "Amount", "Balance"] };
+    }
   }
 
-  // If table extraction found rows, return them
-  if (rows.length > 0) {
-    await parser.destroy().catch(() => {});
+  const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
+  const rows: ParsedRow[] = [];
+
+  if (!textContent || textContent.trim().length === 0) {
     return { rows, headers };
   }
 
-  // Fallback: text extraction (unstructured PDFs)
-  try {
-    const textResult = await parser.getText();
-    const text = textResult.text || "";
-    const lines = text.split("\n");
+  const lines = textContent.split("\n");
 
-    // Robust date patterns for banking statements
-    const datePattern =
-      /(?:^|\s)(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s*[-\s]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*[-\s]\s*\d{2,4})(?=\s|$)/i;
+  // Date patterns for matching banking statements
+  const datePatterns = [
+    // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    /(?:^|\s)(\d{1,2}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:\d{4}|\d{2}))(?=\s|$)/,
+    // DD MMM YYYY or DD-MMM-YYYY
+    /(?:^|\s)(\d{1,2}\s*[/\-.\s]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*[/\-.\s]\s*\d{2,4})(?=\s|$)/i,
+    // YYYY-MM-DD
+    /(?:^|\s)(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))(?=\s|$)/,
+    // MMM DD, YYYY
+    /(?:^|\s)((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})(?=\s|$)/i,
+  ];
 
-    lines.forEach((line: string) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
+  // Amount pattern: numbers with optional commas and exactly 2 decimal places
+  const amountPattern = /-?(?:\d{1,3}(?:,\d{2,3})*|\d+)\.\d{2}/g;
 
-      const dateMatch = trimmed.match(datePattern);
-      if (!dateMatch) return;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.length < 10) continue;
 
-      const dateStr = dateMatch[1];
-      const date = parseDate(dateStr);
+    // Skip header-like lines
+    const lowerLine = trimmed.toLowerCase();
+    if (
+      lowerLine.includes("opening balance") ||
+      lowerLine.includes("closing balance") ||
+      lowerLine.includes("statement of account") ||
+      lowerLine.includes("page no") ||
+      lowerLine.includes("printed on") ||
+      /^(date|txn\s*date|value\s*date)\s+(description|narration|particulars)/i.test(trimmed)
+    ) {
+      continue;
+    }
 
-      if (isNaN(date.getTime())) return;
+    // Try to match a date at the beginning of the line
+    let dateStr: string | null = null;
+    let dateEndIndex = 0;
 
-      // Isolate the remaining content after the date
-      const idxDate = trimmed.indexOf(dateStr);
-      const afterDate = trimmed.substring(idxDate + dateStr.length).trim();
+    for (const pattern of datePatterns) {
+      const match = trimmed.match(pattern);
+      if (match) {
+        dateStr = match[1];
+        dateEndIndex = (match.index || 0) + match[0].length;
+        break;
+      }
+    }
 
-      // Look for amounts: numbers with optional commas and decimal places
-      const decimalMatchPattern = /-?\d{1,3}(?:,\d{3})*\.?\d{0,2}/g;
-      const allMatches = afterDate.match(decimalMatchPattern);
+    if (!dateStr) continue;
 
-      if (!allMatches || allMatches.length === 0) return;
+    const date = parseDate(dateStr);
+    if (isNaN(date.getTime())) continue;
 
-      // Extract UTR/Reference using common patterns
-      const utrPattern = /(?:UTR|REF|REFERENCE|TRANS|TXN|PAYMENT|INSTRUMENT)\s*(?:NO|ID|NUMBER|ID)?[:.]?\s*([A-Za-z0-9]{8,22})/i;
-      const utrMatch = trimmed.match(utrPattern);
-      const extractedRef = utrMatch ? utrMatch[1] : undefined;
+    // Extract the content after the date
+    const afterDate = trimmed.substring(dateEndIndex).trim();
 
-      // Filter to meaningful amounts
-      const decimals = allMatches.filter((m) => {
-        const v = parseFloat(m.replace(/,/g, ""));
-        // Filter out things that look like UTRs (if they match the decimal pattern accidentally)
-        if (extractedRef && m.includes(extractedRef)) return false;
-        return !isNaN(v) && Math.abs(v) >= 1;
-      });
+    // Find all amounts in the line
+    const allAmounts = afterDate.match(amountPattern);
+    if (!allAmounts || allAmounts.length === 0) continue;
 
-      if (decimals.length === 0) return;
+    // Parse amounts, filtering out likely non-amount values
+    const parsedAmounts = allAmounts
+      .map((m) => ({
+        original: m,
+        value: parseFloat(m.replace(/,/g, "")),
+      }))
+      .filter((a) => !isNaN(a.value) && Math.abs(a.value) >= 0.01);
 
-      let amount: number = 0;
-      let balance: number | undefined;
+    if (parsedAmounts.length === 0) continue;
 
-      if (decimals.length >= 2) {
-        balance = parseFloat(
-          decimals[decimals.length - 1].replace(/,/g, "")
-        );
-        amount = parseFloat(
-          decimals[decimals.length - 2].replace(/,/g, "")
-        );
+    // Extract reference/UTR
+    const reference = extractReference(trimmed);
+
+    // Build description: text between date and first amount
+    let description = afterDate;
+    const firstAmountIdx = description.indexOf(parsedAmounts[0].original);
+    if (firstAmountIdx > 0) {
+      description = description.substring(0, firstAmountIdx).trim();
+    }
+
+    // Clean up description
+    if (reference) {
+      // Remove the reference from description to avoid duplication
+      description = description.replace(new RegExp(reference.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), "").trim();
+    }
+    description = description
+      .replace(/\s{2,}/g, " ")
+      .replace(/[:.]+$/, "")
+      .trim();
+
+    // Determine amount and balance
+    let amount: number = 0;
+    let balance: number | undefined;
+
+    if (parsedAmounts.length >= 3) {
+      // Three or more: likely credit, debit, balance → pick the non-zero transaction amount
+      const credit = parsedAmounts[0].value;
+      const debit = parsedAmounts[1].value;
+      balance = parsedAmounts[parsedAmounts.length - 1].value;
+
+      if (credit > 0 && (debit === 0 || isNaN(debit))) {
+        amount = credit;
+      } else if (debit > 0 && (credit === 0 || isNaN(credit))) {
+        amount = debit;
       } else {
-        amount = parseFloat(decimals[0].replace(/,/g, ""));
+        // If both non-zero, take the larger as transaction amount
+        amount = Math.max(credit, debit);
       }
+    } else if (parsedAmounts.length === 2) {
+      // Two amounts: amount + balance
+      amount = parsedAmounts[0].value;
+      balance = parsedAmounts[1].value;
+    } else {
+      amount = parsedAmounts[0].value;
+    }
 
-      if (isNaN(amount) || amount === 0) return;
+    if (isNaN(amount) || amount === 0) continue;
 
-      // Description is everything before the first recognized amount,
-      // but let's be more precise by excluding the date and any trailing UTR markers
-      let description = afterDate;
-      const firstAmountIdx = description.indexOf(decimals[0]);
-      if (firstAmountIdx !== -1) {
-        description = description.substring(0, firstAmountIdx).trim();
-      }
+    // Detect transaction mode
+    const mode = detectTransactionMode(trimmed);
 
-      // Cleanup description: remove UTR info if it's already extracted
-      if (extractedRef) {
-        description = description.replace(utrPattern, "").replace(/\s+/g, " ").trim();
-      }
+    // Extract time
+    const time = extractTime(trimmed);
 
-      // Determine type
-      let type: TxType;
-      if (txTypeOverride) {
-        type = txTypeOverride;
+    // Determine type
+    let type: TxType;
+    if (txTypeOverride) {
+      type = txTypeOverride;
+    } else {
+      const descLower = (description + " " + afterDate).toLowerCase();
+
+      // Keyword-based classification
+      const debitKeywords = [
+        "debit", "withdrawal", "withdraw", "paid", "payment",
+        "transfer to", "sent", "neft cr", "outward", "purchase",
+        "charges", "fee", "commission", "tax", "tds", "gst",
+      ];
+      const creditKeywords = [
+        "credit", "deposit", "received", "transfer from",
+        "refund", "pay-in", "payin", "inward", "receipt",
+        "interest", "dividend", "cashback",
+      ];
+
+      const isDebit = debitKeywords.some((k) => descLower.includes(k));
+      const isCredit = creditKeywords.some((k) => descLower.includes(k));
+
+      if (isDebit && !isCredit) {
+        type = TxType.PAYOUT;
+      } else if (isCredit && !isDebit) {
+        type = TxType.PAYIN;
       } else {
-        const descLower = description.toLowerCase();
-        const isDebit =
-          descLower.includes("debit") ||
-          descLower.includes("withdrawal") ||
-          descLower.includes("paid") ||
-          descLower.includes("transfer to") ||
-          descLower.includes("payment") ||
-          descLower.includes("neft") ||
-          descLower.includes("rtgs") ||
-          descLower.includes("imps");
-        const isCredit =
-          descLower.includes("credit") ||
-          descLower.includes("deposit") ||
-          descLower.includes("received") ||
-          descLower.includes("transfer from") ||
-          descLower.includes("refund") ||
-          descLower.includes("pay-in");
-
-        if (isDebit) {
-          type = TxType.PAYOUT;
-        } else if (isCredit) {
-          type = TxType.PAYIN;
-        } else {
-          type = amount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
-        }
+        // Use position heuristic: in many bank statements, credits and debits 
+        // appear in different columns (different X positions)
+        type = amount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
       }
+    }
 
-      rows.push({
-        date,
-        amount: Math.abs(amount),
-        description: description || "No description provided",
-        reference: extractedRef,
-        type,
-        balance: balance && !isNaN(balance) ? balance : undefined,
-        cellColor: undefined,
-        rowIndex: rows.length + 1,
-        rawData: { lineText: trimmed },
-        isExcluded: false,
-      });
+    rows.push({
+      date,
+      amount: Math.abs(amount),
+      description: description || "No description provided",
+      reference,
+      type,
+      balance: balance && !isNaN(balance) ? Math.abs(balance) : undefined,
+      cellColor: undefined,
+      rowIndex: rows.length + 1,
+      rawData: { lineText: trimmed, dateStr, mode, time },
+      isExcluded: false,
+      mode,
+      time,
     });
-  } catch (textErr: any) {
-    console.error("[PDF] Text extraction failed:", textErr.message);
   }
 
-  await parser.destroy().catch(() => {});
   return { rows, headers };
 }
-

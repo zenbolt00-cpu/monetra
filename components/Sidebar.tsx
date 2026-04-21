@@ -13,7 +13,8 @@ import {
   History, 
   UserCircle,
   PiggyBank,
-  Wallet
+  Wallet,
+  Sparkles,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -45,13 +46,26 @@ export default function Sidebar({ role }: SidebarProps) {
   const links = role === "ADMIN" ? adminLinks : vendorLinks;
 
   return (
-    <aside className="glass-sidebar fixed left-0 top-0 z-40 h-screen w-[240px] px-4 py-8 flex flex-col">
-      <div className="mb-10 px-4">
-        <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f]">Montera</h1>
-        <p className="text-[10px] uppercase tracking-widest text-[#86868b] mt-1">{role} PORTAL</p>
+    <aside className="glass-sidebar fixed left-0 top-0 z-40 h-screen w-[240px] px-3 py-6 flex flex-col">
+      {/* Logo */}
+      <div className="mb-8 px-4">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl ios-blue-gradient flex items-center justify-center shadow-sm">
+            <Sparkles className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold tracking-tight text-[#1d1d1f]">
+              Monetra
+            </h1>
+            <p className="text-[9px] uppercase tracking-[0.12em] text-[#86868b] font-semibold -mt-0.5">
+              {role} Portal
+            </p>
+          </div>
+        </div>
       </div>
 
-      <nav className="flex-1 space-y-1">
+      {/* Navigation */}
+      <nav className="flex-1 space-y-0.5">
         {links.map((link) => {
           const isActive = pathname === link.href;
           const Icon = link.icon;
@@ -61,30 +75,47 @@ export default function Sidebar({ role }: SidebarProps) {
               key={link.href}
               href={link.href}
               className={cn(
-                "group flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300",
+                "group flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all duration-300 relative",
                 isActive 
-                  ? "bg-primary/10 text-primary shadow-sm" 
-                  : "text-[#424245] hover:text-[#1d1d1f] hover:bg-black/5"
+                  ? "bg-primary/10 text-primary" 
+                  : "text-[#424245] hover:text-[#1d1d1f] hover:bg-black/[0.04]"
               )}
             >
-              <Icon className={cn("w-5 h-5", isActive ? "text-primary" : "text-[#424245] group-hover:text-[#1d1d1f]")} />
-              <span className="font-medium text-sm">{link.label}</span>
               {isActive && (
-                <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary" />
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-full bg-primary" />
               )}
+              <Icon 
+                className={cn(
+                  "w-[18px] h-[18px] transition-colors", 
+                  isActive 
+                    ? "text-primary" 
+                    : "text-[#86868b] group-hover:text-[#424245]"
+                )} 
+              />
+              <span className={cn(
+                "text-[13px] tracking-tight",
+                isActive ? "font-semibold" : "font-medium"
+              )}>
+                {link.label}
+              </span>
             </Link>
           );
         })}
       </nav>
 
-      <div className="mt-auto px-4 py-4">
-        <div className="glass p-4 rounded-2xl flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs capitalize">
+      {/* Footer Card */}
+      <div className="mt-auto px-1">
+        <div className="glass p-3.5 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 flex items-center justify-center text-primary font-bold text-xs capitalize">
             {role[0]}
           </div>
-          <div>
-            <p className="text-xs font-semibold text-[#1d1d1f] truncate w-24">Montera User</p>
-            <p className="text-[10px] text-[#86868b] capitalize">{role.toLowerCase()}</p>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#1d1d1f] truncate">
+              Monetra User
+            </p>
+            <p className="text-[10px] text-[#86868b] capitalize tracking-tight">
+              {role.toLowerCase()} account
+            </p>
           </div>
         </div>
       </div>

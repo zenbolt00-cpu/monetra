@@ -11,6 +11,7 @@ const config: Config = {
   	extend: {
   		fontFamily: {
   			sans: [
+  				'Inter',
   				'-apple-system',
   				'BlinkMacSystemFont',
   				'"SF Pro Text"',
@@ -20,7 +21,16 @@ const config: Config = {
   				'"Helvetica Neue"',
   				'Arial',
   				'sans-serif'
-  			]
+  			],
+  			mono: [
+  				'"SF Mono"',
+  				'"Fira Code"',
+  				'"Cascadia Code"',
+  				'Menlo',
+  				'Monaco',
+  				'Consolas',
+  				'monospace'
+  			],
   		},
   		colors: {
   			border: 'hsl(var(--border))',
@@ -68,14 +78,15 @@ const config: Config = {
   			md: 'calc(var(--radius) - 6px)',
   			sm: 'calc(var(--radius) - 10px)',
         card: '24px',
-        modal: '32px',
-        button: '16px'
+        modal: '28px',
+        button: '14px'
   		},
       boxShadow: {
-        'ios-soft': '0 8px 40px rgba(0, 0, 0, 0.04)',
-        'ios-medium': '0 12px 60px rgba(0, 0, 0, 0.08)',
-        'ios-heavy': '0 20px 80px rgba(0, 0, 0, 0.12)',
-        'glass-light': 'inset 0 0 0 1px rgba(255, 255, 255, 0.4), 0 8px 30px rgba(0, 0, 0, 0.05)',
+        'ios-soft': '0 4px 24px rgba(0, 0, 0, 0.03), 0 1px 2px rgba(0, 0, 0, 0.02)',
+        'ios-medium': '0 8px 40px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.02)',
+        'ios-heavy': '0 20px 80px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.04)',
+        'glass-light': 'inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 4px 20px rgba(0, 0, 0, 0.04)',
+        'glass-glow': '0 0 24px rgba(10, 132, 255, 0.1), 0 0 60px rgba(10, 132, 255, 0.04)',
       },
   		keyframes: {
   			'accordion-down': {
@@ -89,16 +100,20 @@ const config: Config = {
         'spring-entrance': {
           from: { opacity: '0', transform: 'translateY(12px)' },
           to: { opacity: '1', transform: 'translateY(0)' }
-        }
+        },
+        'slide-up-fade': {
+          from: { opacity: '0', transform: 'translateY(6px)' },
+          to: { opacity: '1', transform: 'translateY(0)' }
+        },
   		},
   		animation: {
   			'accordion-down': 'accordion-down 0.2s ease-out',
   			'accordion-up': 'accordion-up 0.2s ease-out',
-        'spring-entrance': 'spring-entrance 0.4s ease-out'
+        'spring-entrance': 'spring-entrance 0.4s ease-out',
+        'slide-up-fade': 'slide-up-fade 0.3s ease-out',
   		}
   	}
   },
   plugins: [require("tailwindcss-animate")],
 };
 export default config;
-
