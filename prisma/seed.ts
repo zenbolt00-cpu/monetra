@@ -14,11 +14,11 @@ async function main() {
 
   // Create Admin
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@montera.app' },
+    where: { email: 'admin@monetra.app' },
     update: {},
     create: {
-      email: 'admin@montera.app',
-      name: 'Montera Admin',
+      email: 'admin@monetra.app',
+      name: 'Monetra Admin',
       password: adminPassword,
       role: Role.ADMIN,
     },

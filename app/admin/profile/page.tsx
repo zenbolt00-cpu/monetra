@@ -55,7 +55,7 @@ export default function AdminProfilePage() {
                   Full Name
                 </p>
                 <p className="text-sm font-semibold text-[#1d1d1f] mt-0.5">
-                  {user?.name || "Montera Admin"}
+                  {user?.name || "Monetra Admin"}
                 </p>
               </div>
             </div>
@@ -69,7 +69,7 @@ export default function AdminProfilePage() {
                   Email Address
                 </p>
                 <p className="text-sm font-semibold text-[#1d1d1f] mt-0.5">
-                  {user?.email || "admin@montera.app"}
+                  {user?.email || "admin@monetra.app"}
                 </p>
               </div>
             </div>

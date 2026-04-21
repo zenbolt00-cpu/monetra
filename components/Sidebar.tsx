@@ -49,9 +49,13 @@ export default function Sidebar({ role }: SidebarProps) {
     <aside className="glass-sidebar fixed left-0 top-0 z-40 h-screen w-[240px] px-3 py-6 flex flex-col">
       {/* Logo */}
       <div className="mb-8 px-4">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl ios-blue-gradient flex items-center justify-center shadow-sm">
-            <Sparkles className="w-4 h-4 text-white" />
+        <Link href={role === "ADMIN" ? "/admin/dashboard" : "/vendor/dashboard"} className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-white flex items-center justify-center shadow-sm overflow-hidden p-1.5 border border-black/[0.04]">
+            <img 
+              src="/monetra-logo.png" 
+              alt="Monetra" 
+              className="w-full h-full object-contain"
+            />
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-tight text-[#1d1d1f]">
@@ -61,7 +65,7 @@ export default function Sidebar({ role }: SidebarProps) {
               {role} Portal
             </p>
           </div>
-        </div>
+        </Link>
       </div>
 
       {/* Navigation */}

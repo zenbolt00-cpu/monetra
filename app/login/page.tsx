@@ -51,7 +51,14 @@ function LoginForm() {
         className="glass-card w-full max-w-md p-8 md:p-10"
       >
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-[#1d1d1f] mb-2">Montera</h1>
+          <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-sm overflow-hidden p-2.5 border border-black/[0.04] mx-auto mb-4">
+            <img 
+              src="/monetra-logo.png" 
+              alt="Monetra" 
+              className="w-full h-full object-contain"
+            />
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-[#1d1d1f] mb-2">Monetra</h1>
           <p className="text-[#86868b]">Sign in to manage your accounts</p>
         </div>
 
@@ -66,7 +73,7 @@ function LoginForm() {
               onChange={(e) => setEmail(e.target.value)}
               required
               className="glass-input w-full px-4 py-3"
-              placeholder="admin@montera.app"
+              placeholder="admin@monetra.app"
             />
           </div>
 
@@ -103,7 +110,7 @@ function LoginForm() {
         </form>
 
         <div className="mt-8 text-center text-xs text-[#86868b]">
-          &copy; {new Date().getFullYear()} Montera. All rights reserved.
+          &copy; {new Date().getFullYear()} Monetra. All rights reserved.
         </div>
       </motion.div>
     </div>
