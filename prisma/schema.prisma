@@ -10,13 +10,13 @@ model User {
   id         String    @id @default(cuid())
   email      String    @unique
   password   String
-  name       String
+  name       String    @default("")
   role       Role      @default(VENDOR)
   isActive   Boolean   @default(true)
   vendor     Vendor?   @relation(fields: [vendorId], references: [id])
   vendorId   String?
   createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  updatedAt  DateTime  @default(now()) @updatedAt
   auditLogs  AuditLog[]
 }
 
