@@ -1,10 +1,7 @@
 import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import PDFParse from "pdf-parse";
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
@@ -455,114 +452,145 @@ export async function processExcel(
 }
 
 /* ──────────────────────────────────────────────────────────
- *  AI-POWERED EXTRACTION ENGINE (Gemini)
- * ────────────────────────────────────────────────────────── */
-async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  console.log(`[AI] Checking API Key... ${apiKey ? `Exists (length: ${apiKey.length})` : "MISSING"}`);
-  
-  if (!apiKey) {
-    console.error("[AI] Critical: GEMINI_API_KEY is missing from environment.");
-    return [];
-  }
-
-  try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-pro",
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.95,
-        responseMimeType: "application/json",
-      }
-    });
-
-    let promptParts: any[] = [];
-    if (isPDF && Buffer.isBuffer(input)) {
-      console.log("[AI] Attempting Multimodal PDF Extraction...");
-      promptParts = [
-        {
-          inlineData: {
-            data: input.toString("base64"),
-            mimeType: "application/pdf"
-          }
-        },
-        {
-          text: `Extract all transactions from this bank statement PDF. Return JSON array.
-          Fields: date (YYYY-MM-DD), amount (number), description, reference, type (PAYIN/PAYOUT), mode.
-          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}`
-        }
-      ];
-    } else {
-      console.log("[AI] Attempting Text-based Extraction...");
-      promptParts = [
-        {
-          text: `Extract transactions from this statement text:
-          ${input.toString().substring(0, 50000)}
-          Return JSON array. ${txTypeOverride ? `FORCE: ${txTypeOverride}` : ""}`
-        }
-      ];
-    }
-
-    const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
-    const response = await result.response;
-    const text = response.text().trim();
-    
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const jsonData = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
-    const transactions = Array.isArray(jsonData) ? jsonData : jsonData.transactions || [];
-
-    console.log(`[AI] Successfully extracted ${transactions.length} rows.`);
-
-    return transactions.map((item: any, index: number) => ({
-      date: new Date(item.date),
-      amount: Math.abs(Number(item.amount)),
-      description: item.description || "Transaction",
-      reference: item.reference || undefined,
-      type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
-      mode: item.mode,
-      rowIndex: index + 1,
-      isExcluded: false,
-      rawData: JSON.stringify(item)
-    }));
-  } catch (error) {
-    console.error("[AI] Gemini Extraction Error:", error);
-    return [];
-  }
-}
-
-/* ──────────────────────────────────────────────────────────
- *  PDF PROCESSOR – Enhanced AI-like Extraction Engine
+ *  PDF PROCESSOR – Inbuilt Local Intelligence Engine
  * ────────────────────────────────────────────────────────── */
 export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  console.log("[PDF] Starting production extraction pipeline...");
+  console.log("[PDF] Starting production extraction pipeline using INBUILT Intelligence Engine...");
   
-  // Strategy 1: Multimodal Gemini (Robust for scanned/images)
-  let rows = await processWithAI(buffer, txTypeOverride, true);
-  
-  // Strategy 2: Text-based fallback (If multimodal failed but text exists)
-  if (rows.length === 0) {
-    console.log("[PDF] Multimodal failed, trying text-based fallback...");
-    try {
-      const data = await PDFParse(buffer);
-      if (data.text && data.text.trim().length > 20) {
-        console.log(`[PDF] Extracted ${data.text.length} chars of text. Sending to AI...`);
-        rows = await processWithAI(data.text, txTypeOverride, false);
-      } else {
-        console.warn("[PDF] No text extracted by pdf-parse.");
-      }
-    } catch (err) {
-      console.error("[PDF] Text-based fallback error:", err);
-    }
+  let textContent = "";
+  try {
+    const data = await PDFParse(buffer);
+    textContent = data.text || "";
+    console.log(`[PDF] Extracted ${textContent.length} characters of text.`);
+  } catch (err) {
+    console.error("[PDF] Text extraction error:", err);
+    return { rows: [], headers: [] };
   }
   
   const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
-  
-  if (rows.length === 0) {
-    console.error("[PDF] All extraction strategies failed.");
+  let rows: ParsedRow[] = [];
+
+  if (textContent.trim().length < 10) {
+    console.warn("[PDF] Document appears to be empty or a scanned image (requires OCR).");
+    return { rows, headers };
   }
+
+  const lines = textContent.split("\n");
+  
+  // Date Patterns - Aggressive to catch Indian bank formats
+  const datePatterns = [
+    /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3,9})[/\-. ](?:\d{4}|\d{2}))/i,
+    /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})/i,
+    /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/
+  ];
+
+  // Amount Pattern - Catch integers or decimals with commas
+  const amountPattern = /(?:\b|-)(?:\d{1,3}(?:,\d{2,3})*|\d+)(?:\.\d{1,2})?\b/g;
+
+  // AGGRESSIVE EXTRACTION LOOP
+  let currentTx: Partial<ParsedRow> | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.length < 5) continue;
+
+    // Check for date in this line
+    let foundDate: Date | null = null;
+    let dateStr = "";
+    for (const p of datePatterns) {
+      const m = line.match(p);
+      if (m) {
+        const d = parseDate(m[1]);
+        if (!isNaN(d.getTime())) {
+          foundDate = d;
+          dateStr = m[1];
+          break;
+        }
+      }
+    }
+
+    if (foundDate) {
+      // If we already have a transaction being built, push it
+      if (currentTx && currentTx.date && currentTx.amount) {
+        rows.push(currentTx as ParsedRow);
+      }
+
+      // Start new transaction
+      currentTx = {
+        date: foundDate,
+        description: line.replace(dateStr, "").trim(),
+        rowIndex: rows.length + 1,
+        isExcluded: false,
+        rawData: line
+      };
+
+      // Extract amounts from this line
+      const amountsFound = line.match(amountPattern) || [];
+      const parsedAmounts = amountsFound
+        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter(a => a.value > 0.01);
+
+      if (parsedAmounts.length > 0) {
+        // Heuristic: Last is usually balance, first is amount
+        currentTx.amount = parsedAmounts[0].value;
+        if (parsedAmounts.length >= 2) {
+          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
+          if (parsedAmounts.length >= 3) {
+            // [Credit, Debit, Balance] - pick the larger one as amount
+            currentTx.amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
+          }
+        }
+      }
+
+      // Extract Reference & Mode
+      currentTx.reference = extractReference(line);
+      currentTx.mode = detectTransactionMode(line);
+      currentTx.time = extractTime(line);
+
+      // Determine Type
+      currentTx.type = txTypeOverride || (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/) ? TxType.PAYOUT : TxType.PAYIN);
+    } else if (currentTx) {
+      // This line doesn't have a date, but it might be a continuation of the previous description
+      // or contain the amount if it was missing on the date line
+      currentTx.description += " " + line;
+      currentTx.rawData += "\n" + line;
+
+      const amountsFound = line.match(amountPattern) || [];
+      const parsedAmounts = amountsFound
+        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter(a => a.value > 0.01);
+
+      if (parsedAmounts.length > 0 && !currentTx.amount) {
+        currentTx.amount = parsedAmounts[0].value;
+        if (parsedAmounts.length >= 2) {
+          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
+        }
+      }
+
+      if (!currentTx.reference) currentTx.reference = extractReference(line);
+      if (!currentTx.mode) currentTx.mode = detectTransactionMode(line);
+    }
+  }
+
+  // Push the last one
+  if (currentTx && currentTx.date && currentTx.amount) {
+    rows.push(currentTx as ParsedRow);
+  }
+
+  // Post-processing: clean descriptions
+  rows.forEach(row => {
+    if (row.reference) row.description = row.description.replace(row.reference, "");
+    // Remove amount strings from description
+    const amounts = row.description.match(amountPattern) || [];
+    amounts.forEach(a => row.description = row.description.replace(a, ""));
+    row.description = row.description.replace(/\s+/g, " ").trim();
+    if (!row.description) row.description = "Transaction";
+  });
+
+  console.log(`[PDF] Extraction complete. Found ${rows.length} valid transactions.`);
 
   return { rows, headers };
 }
