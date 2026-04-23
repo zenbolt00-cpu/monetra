@@ -462,8 +462,9 @@ export async function processPDF(
   
   let textContent = "";
   try {
-    const data = await PDFParse(buffer);
-    textContent = data.text || "";
+    const parser = new (PDFParse as any).PDFParse({ data: buffer });
+    const textResult = await parser.getText();
+    textContent = textResult.text || "";
     console.log(`[PDF] Extracted ${textContent.length} characters of text.`);
   } catch (err) {
     console.error("[PDF] Text extraction error:", err);
