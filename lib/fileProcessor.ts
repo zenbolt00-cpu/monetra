@@ -1,6 +1,9 @@
 import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
@@ -451,6 +454,67 @@ export async function processExcel(
 }
 
 /* ──────────────────────────────────────────────────────────
+ *  AI-POWERED EXTRACTION ENGINE (Gemini)
+ * ────────────────────────────────────────────────────────── */
+async function processWithAI(text: string, txTypeOverride?: TxType): Promise<ParsedRow[]> {
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("GEMINI_API_KEY not found. Falling back to heuristic parsing.");
+    return [];
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `
+      You are a professional financial data extractor. I will provide you with raw text extracted from a bank statement (PDF or Excel).
+      Your task is to extract all transactions and return them as a valid JSON array.
+      
+      JSON Structure for each transaction:
+      {
+        "date": "YYYY-MM-DD",
+        "amount": number,
+        "description": "Clean narration",
+        "reference": "UTR or Ref number if available",
+        "type": "PAYIN" or "PAYOUT",
+        "balance": number (optional),
+        "mode": "UPI/NEFT/IMPS/CASH etc." (optional)
+      }
+
+      Rules:
+      1. If the amount is credited/deposited/received, type is "PAYIN".
+      2. If the amount is debited/withdrawn/paid, type is "PAYOUT".
+      3. ${txTypeOverride ? `OVERRIDE: All transactions must be classified as ${txTypeOverride}.` : "Detect type automatically."}
+      4. Ensure all amounts are positive numbers.
+      5. Extract the UTR/Reference number accurately.
+      6. Return ONLY the JSON array. No markdown, no explanation.
+
+      Raw Text:
+      ${text.substring(0, 30000)}
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const jsonText = response.text().replace(/```json|```/g, "").trim();
+    const data = JSON.parse(jsonText);
+
+    return data.map((item: any, index: number) => ({
+      date: new Date(item.date),
+      amount: item.amount,
+      description: item.description,
+      reference: item.reference,
+      type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
+      balance: item.balance,
+      mode: item.mode,
+      rowIndex: index + 1,
+      isExcluded: false,
+      rawData: JSON.stringify(item)
+    }));
+  } catch (error) {
+    console.error("AI Extraction failed:", error);
+    return [];
+  }
+}
+
+/* ──────────────────────────────────────────────────────────
  *  PDF PROCESSOR – Enhanced AI-like Extraction Engine
  * ────────────────────────────────────────────────────────── */
 export async function processPDF(
@@ -642,6 +706,13 @@ export async function processPDF(
     row.description = row.description.replace(/\s+/g, " ").trim();
     if (!row.description) row.description = "Transaction";
   });
+
+  // Heuristic parsing finished. If it failed to find any rows, try AI.
+  if (rows.length === 0 && textContent.length > 50 && process.env.GEMINI_API_KEY) {
+    console.log("[PDF] Heuristic failed. Engaging AI Engine...");
+    const aiRows = await processWithAI(textContent, txTypeOverride);
+    if (aiRows.length > 0) return { rows: aiRows, headers: ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"] };
+  }
 
   return { rows, headers };
 }
