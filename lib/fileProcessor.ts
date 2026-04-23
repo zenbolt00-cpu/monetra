@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import PDFParse from "pdf-parse";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -458,8 +459,10 @@ export async function processExcel(
  * ────────────────────────────────────────────────────────── */
 async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
   const apiKey = process.env.GEMINI_API_KEY;
+  console.log(`[AI] Checking API Key... ${apiKey ? `Exists (length: ${apiKey.length})` : "MISSING"}`);
+  
   if (!apiKey) {
-    console.error("[AI] Critical: GEMINI_API_KEY is missing from environment. Extraction will fail.");
+    console.error("[AI] Critical: GEMINI_API_KEY is missing from environment.");
     return [];
   }
 
@@ -475,6 +478,7 @@ async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, is
 
     let promptParts: any[] = [];
     if (isPDF && Buffer.isBuffer(input)) {
+      console.log("[AI] Attempting Multimodal PDF Extraction...");
       promptParts = [
         {
           inlineData: {
@@ -483,24 +487,31 @@ async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, is
           }
         },
         {
-          text: `Extract all bank transactions from this PDF statement. Return as a JSON array.
-          Fields: date (ISO), amount (number), description (clean), reference (UTR/RRN), type (PAYIN/PAYOUT), mode.
-          ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : ""}`
+          text: `Extract all transactions from this bank statement PDF. Return JSON array.
+          Fields: date (YYYY-MM-DD), amount (number), description, reference, type (PAYIN/PAYOUT), mode.
+          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}`
         }
       ];
     } else {
+      console.log("[AI] Attempting Text-based Extraction...");
       promptParts = [
         {
-          text: `Extract transactions from text: ${input.toString().substring(0, 50000)}. Return JSON array.`
+          text: `Extract transactions from this statement text:
+          ${input.toString().substring(0, 50000)}
+          Return JSON array. ${txTypeOverride ? `FORCE: ${txTypeOverride}` : ""}`
         }
       ];
     }
 
     const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
-    const text = result.response.text();
+    const response = await result.response;
+    const text = response.text().trim();
+    
     const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const data = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
-    const transactions = Array.isArray(data) ? data : data.transactions || [];
+    const jsonData = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+    const transactions = Array.isArray(jsonData) ? jsonData : jsonData.transactions || [];
+
+    console.log(`[AI] Successfully extracted ${transactions.length} rows.`);
 
     return transactions.map((item: any, index: number) => ({
       date: new Date(item.date),
@@ -526,15 +537,31 @@ export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  console.log("[PDF] Processing with inbuilt intelligence engine...");
+  console.log("[PDF] Starting production extraction pipeline...");
   
-  // Use multimodal Gemini directly for 100% fidelity and stability in production
-  const rows = await processWithAI(buffer, txTypeOverride, true);
+  // Strategy 1: Multimodal Gemini (Robust for scanned/images)
+  let rows = await processWithAI(buffer, txTypeOverride, true);
+  
+  // Strategy 2: Text-based fallback (If multimodal failed but text exists)
+  if (rows.length === 0) {
+    console.log("[PDF] Multimodal failed, trying text-based fallback...");
+    try {
+      const data = await PDFParse(buffer);
+      if (data.text && data.text.trim().length > 20) {
+        console.log(`[PDF] Extracted ${data.text.length} chars of text. Sending to AI...`);
+        rows = await processWithAI(data.text, txTypeOverride, false);
+      } else {
+        console.warn("[PDF] No text extracted by pdf-parse.");
+      }
+    } catch (err) {
+      console.error("[PDF] Text-based fallback error:", err);
+    }
+  }
   
   const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
   
   if (rows.length === 0) {
-    console.warn("[PDF] Intelligence engine returned 0 rows. This might be due to missing API key or complex format.");
+    console.error("[PDF] All extraction strategies failed.");
   }
 
   return { rows, headers };
