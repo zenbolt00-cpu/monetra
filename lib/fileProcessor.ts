@@ -456,7 +456,7 @@ export async function processExcel(
 /* ──────────────────────────────────────────────────────────
  *  AI-POWERED EXTRACTION ENGINE (Gemini)
  * ────────────────────────────────────────────────────────── */
-async function processWithAI(text: string, txTypeOverride?: TxType): Promise<ParsedRow[]> {
+async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
   if (!process.env.GEMINI_API_KEY) {
     console.warn("GEMINI_API_KEY not found. Falling back to heuristic parsing.");
     return [];
@@ -466,48 +466,77 @@ async function processWithAI(text: string, txTypeOverride?: TxType): Promise<Par
     const model = genAI.getGenerativeModel({ 
       model: "gemini-1.5-pro",
       generationConfig: {
-        temperature: 0.1, // Low temperature for high precision
+        temperature: 0.1,
         topP: 0.95,
         responseMimeType: "application/json",
       }
     });
 
-    const prompt = `
-      You are the Monetra Document Intelligence Engine, powered by Google's most advanced financial knowledge.
-      Your goal is to extract EXACT and CORRECT transaction data from the provided bank statement text.
-
-      MONETRA KNOWLEDGE BASE (INDIAN BANKING):
-      - UPI: Usually looks like "UPI-ID-Name" or "UPI/123456789012/Narration". The 12-digit number is the RRN (Reference Number).
-      - NEFT/RTGS: Often starts with a bank code (e.g., SBIN, HDFC, ICIC) followed by a 10-16 character alphanumeric UTR.
-      - IMPS: Usually has a 12-digit RRN similar to UPI.
-      - CHEQUE: Look for "CHQ NO", "CHEQUE NO" or 6-digit standalone numbers.
-      - CHARGES: "CONSOLIDATED CHARGES", "GST", "ANNUAL FEE" are PAYOUTs.
-      - INTEREST: "INTEREST PAID", "INT.CREDIT" are PAYINs.
-
-      JSON STRUCTURE (STRICT):
-      [
+    let promptParts: any[] = [];
+    
+    if (isPDF && Buffer.isBuffer(input)) {
+      promptParts = [
         {
-          "date": "YYYY-MM-DD",
-          "amount": number (Positive only),
-          "description": "Cleaned narration without the reference number",
-          "reference": "Clean UTR/RRN/Ref number",
-          "type": "PAYIN" | "PAYOUT",
-          "balance": number (Optional),
-          "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
+          inlineData: {
+            data: input.toString("base64"),
+            mimeType: "application/pdf"
+          }
+        },
+        {
+          text: `
+            You are the Monetra Document Intelligence Engine. 
+            I have provided a bank statement PDF. Extract all transactions with 100% precision.
+            
+            KNOWLEDGE BASE (INDIAN BANKING):
+            - UPI: Extract 12-digit RRN from narration.
+            - NEFT/RTGS: Extract UTR codes (alphanumeric).
+            - Classification: Deduce PAYIN/PAYOUT carefully from Credit/Debit columns.
+            ${txTypeOverride ? `- FORCE TYPE: All transactions must be ${txTypeOverride}.` : ""}
+
+            JSON STRUCTURE (STRICT):
+            [
+              {
+                "date": "YYYY-MM-DD",
+                "amount": number,
+                "description": "Narration without reference",
+                "reference": "UTR/RRN",
+                "type": "PAYIN" | "PAYOUT",
+                "balance": number,
+                "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
+              }
+            ]
+          `
         }
-      ]
+      ];
+    } else {
+      promptParts = [
+        {
+          text: `
+            You are the Monetra Document Intelligence Engine.
+            Extract transaction data from this raw text.
+            ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : ""}
 
-      RULES:
-      1. Extraction must be 100% exact. Do not hallucinate.
-      2. If a reference number is found inside a description, extract it into the "reference" field and remove it from "description".
-      3. ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : "Deduce type from keywords like 'Cr', 'Dr', 'Deposit', 'Withdrawal', 'Sent to', 'Received from'."}
-      4. Ensure all amounts are numeric. No commas or currency symbols.
+            JSON STRUCTURE (STRICT):
+            [
+              {
+                "date": "YYYY-MM-DD",
+                "amount": number,
+                "description": "Narration",
+                "reference": "UTR/RRN",
+                "type": "PAYIN" | "PAYOUT",
+                "balance": number,
+                "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
+              }
+            ]
 
-      RAW STATEMENT TEXT:
-      ${text.substring(0, 40000)}
-    `;
+            RAW TEXT:
+            ${input.toString().substring(0, 40000)}
+          `
+        }
+      ];
+    }
 
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
     const response = await result.response;
     const jsonText = response.text().trim();
     const data = JSON.parse(jsonText);
@@ -515,8 +544,8 @@ async function processWithAI(text: string, txTypeOverride?: TxType): Promise<Par
     return data.map((item: any, index: number) => ({
       date: new Date(item.date),
       amount: item.amount,
-      description: item.description,
-      reference: item.reference,
+      description: item.description || "Transaction",
+      reference: item.reference || undefined,
       type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
       balance: item.balance,
       mode: item.mode,
@@ -525,7 +554,7 @@ async function processWithAI(text: string, txTypeOverride?: TxType): Promise<Par
       rawData: JSON.stringify(item)
     }));
   } catch (error) {
-    console.error("Gemini 1.5 Pro Extraction failed:", error);
+    console.error("Gemini 1.5 Pro AI Extraction failed:", error);
     return [];
   }
 }
@@ -602,16 +631,17 @@ export async function processPDF(
       textContent = textResult.text || "";
       await parser.destroy().catch(() => {});
     } catch (parseErr) {
-      return { rows: [], headers: ["Date", "Description", "Reference", "Amount", "Balance"] };
+      console.log("[PDF] pdf-parse fallback also failed.");
+      textContent = ""; // Ensure we continue to AI check
     }
   }
 
   const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
-  const rows: ParsedRow[] = [];
+  let rows: ParsedRow[] = [];
 
-  if (!textContent || textContent.trim().length === 0) return { rows, headers };
-
-  const lines = textContent.split("\n");
+  // Try heuristic parsing only if we have text
+  if (textContent && textContent.trim().length > 10) {
+    const lines = textContent.split("\n");
   
   // Date Patterns - Very aggressive to catch any Indian bank format
   const datePatterns = [
@@ -723,11 +753,15 @@ export async function processPDF(
     if (!row.description) row.description = "Transaction";
   });
 
-  // Heuristic parsing finished. If it failed to find any rows, try AI.
-  if (rows.length === 0 && textContent.length > 50 && process.env.GEMINI_API_KEY) {
-    console.log("[PDF] Heuristic failed. Engaging AI Engine...");
-    const aiRows = await processWithAI(textContent, txTypeOverride);
-    if (aiRows.length > 0) return { rows: aiRows, headers: ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"] };
+  }
+
+  // If heuristic found NO rows, OR if textContent is very small (likely scanned image), engage AI
+  if (rows.length === 0 || textContent.length < 100) {
+    if (process.env.GEMINI_API_KEY) {
+      console.log("[PDF] Heuristic failed or scanned image detected. Engaging Gemini Multimodal Engine...");
+      const aiRows = await processWithAI(buffer, txTypeOverride, true);
+      if (aiRows.length > 0) return { rows: aiRows, headers: ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"] };
+    }
   }
 
   return { rows, headers };
