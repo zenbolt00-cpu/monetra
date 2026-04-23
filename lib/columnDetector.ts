@@ -18,31 +18,32 @@ const DATE_HEADERS = [
   "date", "on", "when", "datetime", "transaction date",
   "tx date", "value date", "txn date", "posting date", "effective date",
   "trans date", "trn date", "txn dt", "tran date", "entry date",
-  "settlement date",
+  "settlement date", "val dt", "tran dt", "trans_date", "value_date",
 ];
 const CREDIT_HEADERS = [
   "credit", "deposit", "cr", "received", "pay-in", "payin",
   "cr amount", "credit amount", "deposits", "money in", "credit(cr)",
   "credit (cr)", "cr.", "credits", "amount credited", "inflow",
-  "receipt", "receipts",
+  "receipt", "receipts", "deposits/credits", "pay-in amount",
 ];
 const DEBIT_HEADERS = [
   "debit", "withdrawal", "dr", "paid", "payout", "pay-out",
   "dr amount", "debit amount", "withdrawals", "money out", "debit(dr)",
   "debit (dr)", "dr.", "debits", "amount debited", "outflow",
-  "withdraw", "payment", "payments",
+  "withdraw", "payment", "payments", "withdrawals/debits", "payout amount",
 ];
 const AMOUNT_HEADERS = [
   "amount", "pay", "value", "sum", "total", "txn amount",
   "transaction amount", "net amount", "amount(inr)", "amount (inr)",
-  "amt", "transaction value", "txn value",
+  "amt", "transaction value", "txn value", "trans amount", "tran amount",
 ];
 const DESCRIPTION_HEADERS = [
   "description", "narration", "particulars", "remarks", "note",
   "detail", "transaction details", "tx description", "payment details",
   "info", "memo", "narrative", "details", "transaction narration",
   "transaction description", "txn description", "txn details",
-  "remark", "notes", "transaction particulars",
+  "remark", "notes", "transaction particulars", "particular",
+  "narrative", "transaction info",
 ];
 const REFERENCE_HEADERS = [
   "ref", "ref no", "reference", "cheque", "utr", "txn id",
@@ -52,24 +53,24 @@ const REFERENCE_HEADERS = [
   "ref no.", "reference no", "reference no.", "rrn",
   "receipt no", "receipt number", "voucher no", "voucher number",
   "cheque no", "cheque number", "chq/ref no", "chq/ref",
-  "arn", "approval code", "auth code",
+  "arn", "approval code", "auth code", "external ref", "ext ref",
 ];
 const TYPE_HEADERS = [
   "type", "cr/dr", "transaction type", "txn type", "mode", "dr/cr",
   "indicator", "debit/credit", "credit/debit", "txn mode",
-  "transaction mode", "payment mode", "pay mode",
+  "transaction mode", "payment mode", "pay mode", "tran type",
 ];
 const BALANCE_HEADERS = [
   "balance", "closing balance", "running balance", "available balance",
   "current balance", "bal", "closing", "closing bal", "running bal",
-  "available bal", "net balance", "total balance",
+  "available bal", "net balance", "total balance", "bal amount", "ledger balance",
 ];
 const TIME_HEADERS = [
-  "time", "txn time", "transaction time",
+  "time", "txn time", "transaction time", "trans time", "tran time",
 ];
 const MODE_HEADERS = [
   "mode", "channel", "payment method", "payment channel",
-  "txn channel", "transfer mode", "transfer type",
+  "txn channel", "transfer mode", "transfer type", "payment_mode",
 ];
 
 export function detectColumns(headers: string[]): ColumnMapping {

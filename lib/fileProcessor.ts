@@ -42,14 +42,31 @@ export interface ParsedRow {
 function parseNumber(val: any): number {
   if (typeof val === "number") return val;
   if (!val) return NaN;
-  const str = String(val).trim();
-  // Remove currency symbols and spaces
-  const cleaned = str.replace(/[₹$€£¥,\s]+/g, "").replace(/^[(-]+|[)]+$/g, "");
-  const num = parseFloat(cleaned);
-  // Handle parenthetical negatives: (1234.00) → -1234.00
-  if (str.startsWith("(") && str.endsWith(")")) return -Math.abs(num);
+  let str = String(val).trim();
+  
+  // Remove currency symbols, spaces, and other non-numeric chars except . , - ( )
+  str = str.replace(/[₹$€£¥\s]+/g, "");
+  
+  // Handle (1,234.56) -> -1,234.56
+  if (str.startsWith("(") && str.endsWith(")")) {
+    str = "-" + str.slice(1, -1);
+  }
+  
   // Handle trailing minus: 1234.00-
-  if (str.endsWith("-") && !str.startsWith("-")) return -Math.abs(num);
+  if (str.endsWith("-") && !str.startsWith("-")) {
+    str = "-" + str.slice(0, -1);
+  }
+
+  // Detect if it's European format: 1.234,56 (comma as decimal separator)
+  // Check if there's a comma followed by 2 digits at the end AND no other comma
+  if (/,(\d{2})$/.test(str) && (str.match(/\./g) || []).length >= 1 && (str.match(/,/g) || []).length === 1) {
+    str = str.replace(/\./g, "").replace(",", ".");
+  } else {
+    // Normal format: remove commas used as thousand separators
+    str = str.replace(/,/g, "");
+  }
+
+  const num = parseFloat(str);
   return num;
 }
 
@@ -184,14 +201,23 @@ const UTR_PATTERNS = [
 function extractReference(text: string): string | undefined {
   if (!text) return undefined;
 
+  // Clean text from common clutter that might interfere with regex
+  const cleanText = text.replace(/[\r\n\t]+/g, " ");
+
   for (const pattern of UTR_PATTERNS) {
-    const match = text.match(pattern);
+    const match = cleanText.match(pattern);
     if (match && match[1]) {
       const ref = match[1].trim();
-      // Validate: not a date, not too short, not all zeros
+      
+      // Validation: 
+      // 1. Not a date
+      // 2. Not a pure small number (amount)
+      // 3. Not all zeros
+      // 4. Length >= 6
       if (
         ref.length >= 6 &&
-        !/^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}$/.test(ref) &&
+        !/^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}$/.test(ref) && // Not date
+        !/^\d+(\.\d{1,2})?$/.test(ref) && // Not simple amount
         !/^0+$/.test(ref)
       ) {
         return ref;
@@ -436,6 +462,10 @@ export async function processPDF(
   // Strategy 1: Use pdfjs-dist for reliable text extraction
   try {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    // Disable worker for simpler Node.js execution if possible
+    if ((pdfjsLib as any).GlobalWorkerOptions) {
+      (pdfjsLib as any).GlobalWorkerOptions.workerSrc = false;
+    }
 
     const loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(buffer),
@@ -505,20 +535,22 @@ export async function processPDF(
   
   // Date Patterns - Very aggressive to catch any Indian bank format
   const datePatterns = [
-    /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3})[/\-. ](?:\d{4}|\d{2}))/i,
+    /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3,9})[/\-. ](?:\d{4}|\d{2}))/i,
     /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})/i,
     /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/
   ];
 
   // Amount Pattern - Catch integers or decimals with commas
-  const amountPattern = /-?(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?\b/g;
+  const amountPattern = /-?(?:\d{1,3}(?:,\d{2,3})*|\d+)(?:\.\d{1,2})?\b/g;
 
   // AGGRESSIVE EXTRACTION LOOP
+  let currentTx: Partial<ParsedRow> | null = null;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (line.length < 10) continue;
+    if (line.length < 5) continue;
 
-    // Check for date
+    // Check for date in this line
     let foundDate: Date | null = null;
     let dateStr = "";
     for (const p of datePatterns) {
@@ -533,81 +565,83 @@ export async function processPDF(
       }
     }
 
-    if (!foundDate) continue;
-
-    // We found a date! Now look for amounts in this line OR the next line
-    let textToScan = line;
-    let amountsFound = textToScan.match(amountPattern) || [];
-
-    // If no amounts found on this line, peek at the next line (some statements wrap)
-    if (amountsFound.length === 0 && i + 1 < lines.length) {
-      const nextLine = lines[i+1].trim();
-      const nextAmounts = nextLine.match(amountPattern) || [];
-      if (nextAmounts.length > 0) {
-        textToScan += " " + nextLine;
-        amountsFound = nextAmounts;
-        i++; // Skip next line
+    if (foundDate) {
+      // If we already have a transaction being built, push it
+      if (currentTx && currentTx.date && currentTx.amount) {
+        rows.push(currentTx as ParsedRow);
       }
-    }
 
-    if (amountsFound.length === 0) continue;
+      // Start new transaction
+      currentTx = {
+        date: foundDate,
+        description: line.replace(dateStr, "").trim(),
+        rowIndex: rows.length + 1,
+        isExcluded: false,
+        rawData: line
+      };
 
-    // Parse all amounts
-    const parsedAmounts = amountsFound
-      .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-      .filter(a => a.value > 0.01);
+      // Extract amounts from this line
+      const amountsFound = line.match(amountPattern) || [];
+      const parsedAmounts = amountsFound
+        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter(a => a.value > 0.01);
 
-    if (parsedAmounts.length === 0) continue;
-
-    // Reference & Mode
-    const reference = extractReference(textToScan);
-    const mode = detectTransactionMode(textToScan);
-    const time = extractTime(textToScan);
-
-    // Build Description
-    let description = textToScan.replace(dateStr, "");
-    if (reference) description = description.replace(reference, "");
-    parsedAmounts.forEach(a => description = description.replace(a.original, ""));
-    description = description.replace(/\s+/g, " ").trim();
-
-    // Heuristic: Last amount is usually Balance, first/middle is Transaction
-    let amount = parsedAmounts[0].value;
-    let balance: number | undefined;
-
-    if (parsedAmounts.length >= 2) {
-      balance = parsedAmounts[parsedAmounts.length - 1].value;
-      // If we have 3, [Credit, Debit, Balance]
-      if (parsedAmounts.length >= 3) {
-        // Find the one that actually matches the transaction
-        // Often one is zero or empty in the PDF string
-        amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
+      if (parsedAmounts.length > 0) {
+        // Heuristic: Last is usually balance, first is amount
+        currentTx.amount = parsedAmounts[0].value;
+        if (parsedAmounts.length >= 2) {
+          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
+          if (parsedAmounts.length >= 3) {
+            // [Credit, Debit, Balance] - pick the larger one as amount
+            currentTx.amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
+          }
+        }
       }
-    }
 
-    // Determine Type
-    let type: TxType = txTypeOverride || (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to/) ? TxType.PAYOUT : TxType.PAYIN);
-    
-    // Final check for specific keywords
-    if (!txTypeOverride) {
-      const lower = textToScan.toLowerCase();
-      if (lower.includes("payout") || lower.includes("withdrawal") || lower.includes("sent")) type = TxType.PAYOUT;
-      else if (lower.includes("payin") || lower.includes("deposit") || lower.includes("received")) type = TxType.PAYIN;
-    }
+      // Extract Reference & Mode
+      currentTx.reference = extractReference(line);
+      currentTx.mode = detectTransactionMode(line);
+      currentTx.time = extractTime(line);
 
-    rows.push({
-      date: foundDate,
-      amount,
-      description: description || "Transaction",
-      reference,
-      type,
-      balance,
-      rowIndex: rows.length + 1,
-      isExcluded: false,
-      mode,
-      time,
-      rawData: line
-    });
+      // Determine Type
+      currentTx.type = txTypeOverride || (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/) ? TxType.PAYOUT : TxType.PAYIN);
+    } else if (currentTx) {
+      // This line doesn't have a date, but it might be a continuation of the previous description
+      // or contain the amount if it was missing on the date line
+      currentTx.description += " " + line;
+      currentTx.rawData += "\n" + line;
+
+      const amountsFound = line.match(amountPattern) || [];
+      const parsedAmounts = amountsFound
+        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter(a => a.value > 0.01);
+
+      if (parsedAmounts.length > 0 && !currentTx.amount) {
+        currentTx.amount = parsedAmounts[0].value;
+        if (parsedAmounts.length >= 2) {
+          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
+        }
+      }
+
+      if (!currentTx.reference) currentTx.reference = extractReference(line);
+      if (!currentTx.mode) currentTx.mode = detectTransactionMode(line);
+    }
   }
+
+  // Push the last one
+  if (currentTx && currentTx.date && currentTx.amount) {
+    rows.push(currentTx as ParsedRow);
+  }
+
+  // Post-processing: clean descriptions
+  rows.forEach(row => {
+    if (row.reference) row.description = row.description.replace(row.reference, "");
+    // Remove amount strings from description
+    const amounts = row.description.match(amountPattern) || [];
+    amounts.forEach(a => row.description = row.description.replace(a, ""));
+    row.description = row.description.replace(/\s+/g, " ").trim();
+    if (!row.description) row.description = "Transaction";
+  });
 
   return { rows, headers };
 }
