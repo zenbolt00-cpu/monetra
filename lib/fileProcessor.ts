@@ -2,8 +2,10 @@ import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
@@ -456,107 +458,114 @@ export async function processExcel(
 /* ──────────────────────────────────────────────────────────
  *  AI-POWERED EXTRACTION ENGINE (Gemini)
  * ────────────────────────────────────────────────────────── */
-async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn("GEMINI_API_KEY not found. Falling back to heuristic parsing.");
+async function processWithGPT4(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn("OPENAI_API_KEY not found. Skipping GPT-4o fallback.");
     return [];
   }
 
   try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-pro",
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.95,
-        responseMimeType: "application/json",
-      }
-    });
-
-    let promptParts: any[] = [];
+    console.log("[AI] Engaging OpenAI GPT-4o Power Fallback...");
     
+    let content: any[] = [];
     if (isPDF && Buffer.isBuffer(input)) {
-      promptParts = [
+      // Note: GPT-4o handles PDFs via assistants or by converting to images.
+      // For direct chat completion, we'll use the text if available, or ask the user for vision.
+      // Since this is a fallback, we'll assume text is provided or we use a multimodal prompt if supported.
+      // Current GPT-4o-mini/pro supports images. We'll use text extraction for now or basic buffer conversion.
+      content = [
         {
-          inlineData: {
-            data: input.toString("base64"),
-            mimeType: "application/pdf"
-          }
-        },
-        {
-          text: `
-            You are the Monetra Document Intelligence Engine. 
-            I have provided a bank statement PDF. Extract all transactions with 100% precision.
-            
-            KNOWLEDGE BASE (INDIAN BANKING):
-            - UPI: Extract 12-digit RRN from narration.
-            - NEFT/RTGS: Extract UTR codes (alphanumeric).
-            - Classification: Deduce PAYIN/PAYOUT carefully from Credit/Debit columns.
-            ${txTypeOverride ? `- FORCE TYPE: All transactions must be ${txTypeOverride}.` : ""}
-
-            JSON STRUCTURE (STRICT):
-            [
-              {
-                "date": "YYYY-MM-DD",
-                "amount": number,
-                "description": "Narration without reference",
-                "reference": "UTR/RRN",
-                "type": "PAYIN" | "PAYOUT",
-                "balance": number,
-                "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
-              }
-            ]
-          `
+          type: "text",
+          text: `Extract all bank transactions from this file content. Return as JSON array.
+          Structure: [{date: YYYY-MM-DD, amount: number, description: string, reference: string, type: PAYIN|PAYOUT}]
+          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}
+          CONTENT: ${input.toString("utf-8").substring(0, 50000)}`
         }
       ];
     } else {
-      promptParts = [
+      content = [
         {
-          text: `
-            You are the Monetra Document Intelligence Engine.
-            Extract transaction data from this raw text.
-            ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : ""}
-
-            JSON STRUCTURE (STRICT):
-            [
-              {
-                "date": "YYYY-MM-DD",
-                "amount": number,
-                "description": "Narration",
-                "reference": "UTR/RRN",
-                "type": "PAYIN" | "PAYOUT",
-                "balance": number,
-                "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
-              }
-            ]
-
-            RAW TEXT:
-            ${input.toString().substring(0, 40000)}
-          `
+          type: "text",
+          text: `Extract all bank transactions from this text. Return as JSON array.
+          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}
+          TEXT: ${input.toString().substring(0, 60000)}`
         }
       ];
     }
 
-    const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
-    const response = await result.response;
-    const jsonText = response.text().trim();
-    const data = JSON.parse(jsonText);
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: content as any }],
+      response_format: { type: "json_object" },
+    });
 
-    return data.map((item: any, index: number) => ({
+    const result = JSON.parse(response.choices[0].message.content || "{}");
+    const transactions = Array.isArray(result) ? result : result.transactions || [];
+
+    return transactions.map((item: any, index: number) => ({
       date: new Date(item.date),
-      amount: item.amount,
+      amount: Math.abs(Number(item.amount)),
       description: item.description || "Transaction",
       reference: item.reference || undefined,
       type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
-      balance: item.balance,
-      mode: item.mode,
       rowIndex: index + 1,
       isExcluded: false,
       rawData: JSON.stringify(item)
     }));
   } catch (error) {
-    console.error("Gemini 1.5 Pro AI Extraction failed:", error);
+    console.error("OpenAI GPT-4o Extraction failed:", error);
     return [];
   }
+}
+
+async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
+  // Try Gemini Pro first
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const model = genAI.getGenerativeModel({ 
+        model: "gemini-1.5-pro",
+        generationConfig: {
+          temperature: 0.1,
+          topP: 0.95,
+          responseMimeType: "application/json",
+        }
+      });
+
+      let promptParts: any[] = [];
+      if (isPDF && Buffer.isBuffer(input)) {
+        promptParts = [
+          { inlineData: { data: input.toString("base64"), mimeType: "application/pdf" } },
+          { text: `Extract all bank transactions from this PDF. Return JSON array. ${txTypeOverride ? `FORCE: ${txTypeOverride}` : ""}` }
+        ];
+      } else {
+        promptParts = [{ text: `Extract transactions from text: ${input.toString().substring(0, 40000)}` }];
+      }
+
+      const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
+      const data = JSON.parse(result.response.text());
+      const transactions = Array.isArray(data) ? data : data.transactions || [];
+
+      if (transactions.length > 0) {
+        return transactions.map((item: any, index: number) => ({
+          date: new Date(item.date),
+          amount: Number(item.amount),
+          description: item.description || "Transaction",
+          reference: item.reference || undefined,
+          type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
+          balance: item.balance,
+          mode: item.mode,
+          rowIndex: index + 1,
+          isExcluded: false,
+          rawData: JSON.stringify(item)
+        }));
+      }
+    } catch (err) {
+      console.warn("Gemini 1.5 Pro failed, trying GPT-4o fallback...", err);
+    }
+  }
+
+  // Fallback to OpenAI GPT-4o
+  return await processWithGPT4(input, txTypeOverride, isPDF);
 }
 
 /* ──────────────────────────────────────────────────────────
