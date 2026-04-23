@@ -173,38 +173,16 @@ export default function FileUploadZone({
                   <div className="flex items-center gap-2.5 px-5 py-2.5 glass rounded-xl">
                     <Loader2 className="w-4 h-4 animate-spin text-primary" />
                     <span className="text-xs font-semibold text-[#1d1d1f]">
-                      Extracting records...
+                      Processing...
                     </span>
                   </div>
                 ) : (
-                  <>
-                    <div className="flex items-center gap-1.5 text-ios-green">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider">
-                        Ready
-                      </span>
-                    </div>
-
-                    {showParseButton && onParseClick && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onParseClick();
-                        }}
-                        className="flex items-center gap-2 px-6 py-2.5 ios-blue-gradient text-white rounded-xl font-semibold text-sm tracking-tight"
-                      >
-                        <Play className="w-4 h-4" />
-                        Extract Data
-                      </button>
-                    )}
-
-                    <button
-                      onClick={removeFile}
-                      className="p-2.5 rounded-xl glass hover:bg-ios-red/10 hover:text-ios-red transition-all text-[#86868b]"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </>
+                  <button
+                    onClick={removeFile}
+                    className="p-2.5 rounded-xl glass hover:bg-ios-red/10 hover:text-ios-red transition-all text-[#86868b]"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 )}
               </div>
             </div>

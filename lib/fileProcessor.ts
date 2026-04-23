@@ -2,10 +2,8 @@ import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import OpenAI from "openai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
@@ -458,49 +456,51 @@ export async function processExcel(
 /* ──────────────────────────────────────────────────────────
  *  AI-POWERED EXTRACTION ENGINE (Gemini)
  * ────────────────────────────────────────────────────────── */
-async function processWithGPT4(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn("OPENAI_API_KEY not found. Skipping GPT-4o fallback.");
+async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error("[AI] Critical: GEMINI_API_KEY is missing from environment. Extraction will fail.");
     return [];
   }
 
   try {
-    console.log("[AI] Engaging OpenAI GPT-4o Power Fallback...");
-    
-    let content: any[] = [];
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-pro",
+      generationConfig: {
+        temperature: 0.1,
+        topP: 0.95,
+        responseMimeType: "application/json",
+      }
+    });
+
+    let promptParts: any[] = [];
     if (isPDF && Buffer.isBuffer(input)) {
-      // Note: GPT-4o handles PDFs via assistants or by converting to images.
-      // For direct chat completion, we'll use the text if available, or ask the user for vision.
-      // Since this is a fallback, we'll assume text is provided or we use a multimodal prompt if supported.
-      // Current GPT-4o-mini/pro supports images. We'll use text extraction for now or basic buffer conversion.
-      content = [
+      promptParts = [
         {
-          type: "text",
-          text: `Extract all bank transactions from this file content. Return as JSON array.
-          Structure: [{date: YYYY-MM-DD, amount: number, description: string, reference: string, type: PAYIN|PAYOUT}]
-          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}
-          CONTENT: ${input.toString("utf-8").substring(0, 50000)}`
+          inlineData: {
+            data: input.toString("base64"),
+            mimeType: "application/pdf"
+          }
+        },
+        {
+          text: `Extract all bank transactions from this PDF statement. Return as a JSON array.
+          Fields: date (ISO), amount (number), description (clean), reference (UTR/RRN), type (PAYIN/PAYOUT), mode.
+          ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : ""}`
         }
       ];
     } else {
-      content = [
+      promptParts = [
         {
-          type: "text",
-          text: `Extract all bank transactions from this text. Return as JSON array.
-          ${txTypeOverride ? `FORCE: All are ${txTypeOverride}.` : ""}
-          TEXT: ${input.toString().substring(0, 60000)}`
+          text: `Extract transactions from text: ${input.toString().substring(0, 50000)}. Return JSON array.`
         }
       ];
     }
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [{ role: "user", content: content as any }],
-      response_format: { type: "json_object" },
-    });
-
-    const result = JSON.parse(response.choices[0].message.content || "{}");
-    const transactions = Array.isArray(result) ? result : result.transactions || [];
+    const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
+    const text = result.response.text();
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    const data = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+    const transactions = Array.isArray(data) ? data : data.transactions || [];
 
     return transactions.map((item: any, index: number) => ({
       date: new Date(item.date),
@@ -508,64 +508,15 @@ async function processWithGPT4(input: string | Buffer, txTypeOverride?: TxType, 
       description: item.description || "Transaction",
       reference: item.reference || undefined,
       type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
+      mode: item.mode,
       rowIndex: index + 1,
       isExcluded: false,
       rawData: JSON.stringify(item)
     }));
   } catch (error) {
-    console.error("OpenAI GPT-4o Extraction failed:", error);
+    console.error("[AI] Gemini Extraction Error:", error);
     return [];
   }
-}
-
-async function processWithAI(input: string | Buffer, txTypeOverride?: TxType, isPDF: boolean = false): Promise<ParsedRow[]> {
-  // Try Gemini Pro first
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-pro",
-        generationConfig: {
-          temperature: 0.1,
-          topP: 0.95,
-          responseMimeType: "application/json",
-        }
-      });
-
-      let promptParts: any[] = [];
-      if (isPDF && Buffer.isBuffer(input)) {
-        promptParts = [
-          { inlineData: { data: input.toString("base64"), mimeType: "application/pdf" } },
-          { text: `Extract all bank transactions from this PDF. Return JSON array. ${txTypeOverride ? `FORCE: ${txTypeOverride}` : ""}` }
-        ];
-      } else {
-        promptParts = [{ text: `Extract transactions from text: ${input.toString().substring(0, 40000)}` }];
-      }
-
-      const result = await model.generateContent({ contents: [{ role: "user", parts: promptParts }] });
-      const data = JSON.parse(result.response.text());
-      const transactions = Array.isArray(data) ? data : data.transactions || [];
-
-      if (transactions.length > 0) {
-        return transactions.map((item: any, index: number) => ({
-          date: new Date(item.date),
-          amount: Number(item.amount),
-          description: item.description || "Transaction",
-          reference: item.reference || undefined,
-          type: item.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN,
-          balance: item.balance,
-          mode: item.mode,
-          rowIndex: index + 1,
-          isExcluded: false,
-          rawData: JSON.stringify(item)
-        }));
-      }
-    } catch (err) {
-      console.warn("Gemini 1.5 Pro failed, trying GPT-4o fallback...", err);
-    }
-  }
-
-  // Fallback to OpenAI GPT-4o
-  return await processWithGPT4(input, txTypeOverride, isPDF);
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -575,202 +526,15 @@ export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  let textContent = "";
-
-  // Strategy 1: Use pdfjs-dist for reliable text extraction
-  try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    // Disable worker for simpler Node.js execution if possible
-    if ((pdfjsLib as any).GlobalWorkerOptions) {
-      (pdfjsLib as any).GlobalWorkerOptions.workerSrc = false;
-    }
-
-    const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(buffer),
-      useSystemFonts: true,
-    });
-
-    const pdf = await loadingTask.promise;
-    const pages: string[] = [];
-
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
-
-      // NEW: Collect all text items with their coordinates
-      const items = content.items as any[];
-      if (items.length === 0) continue;
-
-      // Sort by Y (top to bottom), then X (left to right)
-      // PDF Y is bottom-up, so we invert it for logical sorting
-      items.sort((a, b) => {
-        const yDiff = b.transform[5] - a.transform[5];
-        if (Math.abs(yDiff) > 5) return yDiff; // Different line
-        return a.transform[4] - b.transform[4]; // Same line, left to right
-      });
-
-      // Group into lines with smart merging
-      const lines: string[] = [];
-      let currentLineY = items[0].transform[5];
-      let currentLineText = "";
-
-      for (const item of items) {
-        const y = item.transform[5];
-        if (Math.abs(y - currentLineY) > 5) {
-          // New line
-          if (currentLineText.trim()) lines.push(currentLineText);
-          currentLineY = y;
-          currentLineText = item.str;
-        } else {
-          // Same line - add space if there's a gap
-          currentLineText += (item.str.startsWith(" ") ? "" : " ") + item.str;
-        }
-      }
-      if (currentLineText.trim()) lines.push(currentLineText);
-      pages.push(...lines);
-    }
-
-    textContent = pages.join("\n");
-  } catch (pdfjsErr) {
-    console.log("[PDF] pdfjs-dist failed, trying fallback:", pdfjsErr);
-    try {
-      const { PDFParse } = await import("pdf-parse");
-      const parser = new PDFParse({ data: buffer });
-      const textResult = await parser.getText();
-      textContent = textResult.text || "";
-      await parser.destroy().catch(() => {});
-    } catch (parseErr) {
-      console.log("[PDF] pdf-parse fallback also failed.");
-      textContent = ""; // Ensure we continue to AI check
-    }
-  }
-
-  const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
-  let rows: ParsedRow[] = [];
-
-  // Try heuristic parsing only if we have text
-  if (textContent && textContent.trim().length > 10) {
-    const lines = textContent.split("\n");
+  console.log("[PDF] Processing with inbuilt intelligence engine...");
   
-  // Date Patterns - Very aggressive to catch any Indian bank format
-  const datePatterns = [
-    /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3,9})[/\-. ](?:\d{4}|\d{2}))/i,
-    /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})/i,
-    /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/
-  ];
-
-  // Amount Pattern - Catch integers or decimals with commas
-  const amountPattern = /-?(?:\d{1,3}(?:,\d{2,3})*|\d+)(?:\.\d{1,2})?\b/g;
-
-  // AGGRESSIVE EXTRACTION LOOP
-  let currentTx: Partial<ParsedRow> | null = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.length < 5) continue;
-
-    // Check for date in this line
-    let foundDate: Date | null = null;
-    let dateStr = "";
-    for (const p of datePatterns) {
-      const m = line.match(p);
-      if (m) {
-        const d = parseDate(m[1]);
-        if (!isNaN(d.getTime())) {
-          foundDate = d;
-          dateStr = m[1];
-          break;
-        }
-      }
-    }
-
-    if (foundDate) {
-      // If we already have a transaction being built, push it
-      if (currentTx && currentTx.date && currentTx.amount) {
-        rows.push(currentTx as ParsedRow);
-      }
-
-      // Start new transaction
-      currentTx = {
-        date: foundDate,
-        description: line.replace(dateStr, "").trim(),
-        rowIndex: rows.length + 1,
-        isExcluded: false,
-        rawData: line
-      };
-
-      // Extract amounts from this line
-      const amountsFound = line.match(amountPattern) || [];
-      const parsedAmounts = amountsFound
-        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter(a => a.value > 0.01);
-
-      if (parsedAmounts.length > 0) {
-        // Heuristic: Last is usually balance, first is amount
-        currentTx.amount = parsedAmounts[0].value;
-        if (parsedAmounts.length >= 2) {
-          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
-          if (parsedAmounts.length >= 3) {
-            // [Credit, Debit, Balance] - pick the larger one as amount
-            currentTx.amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
-          }
-        }
-      }
-
-      // Extract Reference & Mode
-      currentTx.reference = extractReference(line);
-      currentTx.mode = detectTransactionMode(line);
-      currentTx.time = extractTime(line);
-
-      // Determine Type
-      currentTx.type = txTypeOverride || (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/) ? TxType.PAYOUT : TxType.PAYIN);
-    } else if (currentTx) {
-      // This line doesn't have a date, but it might be a continuation of the previous description
-      // or contain the amount if it was missing on the date line
-      currentTx.description += " " + line;
-      currentTx.rawData += "\n" + line;
-
-      const amountsFound = line.match(amountPattern) || [];
-      const parsedAmounts = amountsFound
-        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter(a => a.value > 0.01);
-
-      if (parsedAmounts.length > 0 && !currentTx.amount) {
-        currentTx.amount = parsedAmounts[0].value;
-        if (parsedAmounts.length >= 2) {
-          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
-        }
-      }
-
-      if (!currentTx.reference) currentTx.reference = extractReference(line);
-      if (!currentTx.mode) currentTx.mode = detectTransactionMode(line);
-    }
-  }
-
-  // Push the last one
-  if (currentTx && currentTx.date && currentTx.amount) {
-    rows.push(currentTx as ParsedRow);
-  }
-
-  // Post-processing: clean descriptions
-  rows.forEach(row => {
-    if (row.reference) row.description = row.description.replace(row.reference, "");
-    // Remove amount strings from description
-    const amounts = row.description.match(amountPattern) || [];
-    amounts.forEach(a => row.description = row.description.replace(a, ""));
-    row.description = row.description.replace(/\s+/g, " ").trim();
-    if (!row.description) row.description = "Transaction";
-  });
-
-  }
-
-  // If heuristic found NO rows, OR if textContent is very small (likely scanned image), engage AI
-  if (rows.length === 0 || textContent.length < 100) {
-    if (process.env.GEMINI_API_KEY) {
-      console.log("[PDF] Heuristic failed or scanned image detected. Engaging Gemini Multimodal Engine...");
-      const aiRows = await processWithAI(buffer, txTypeOverride, true);
-      if (aiRows.length > 0) return { rows: aiRows, headers: ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"] };
-    }
+  // Use multimodal Gemini directly for 100% fidelity and stability in production
+  const rows = await processWithAI(buffer, txTypeOverride, true);
+  
+  const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
+  
+  if (rows.length === 0) {
+    console.warn("[PDF] Intelligence engine returned 0 rows. This might be due to missing API key or complex format.");
   }
 
   return { rows, headers };

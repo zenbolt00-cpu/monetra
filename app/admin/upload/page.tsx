@@ -47,17 +47,20 @@ export default function AdminUploadPage() {
 
   const handleFileSet = (file: File) => {
     setSelectedFile(file);
+    // Auto-trigger upload
+    setTimeout(() => handleUpload(file), 100);
   };
 
-  const handleUpload = async () => {
-    if (!selectedFile) {
+  const handleUpload = async (fileToUpload?: File) => {
+    const targetFile = fileToUpload || selectedFile;
+    if (!targetFile) {
       toast.error("No file selected");
       return;
     }
 
     setIsUploading(true);
     const formData = new FormData();
-    formData.append("file", selectedFile);
+    formData.append("file", targetFile);
     formData.append("vendorId", selectedVendor || "admin");
     formData.append("txType", txType);
 
@@ -123,19 +126,12 @@ export default function AdminUploadPage() {
     <div className="space-y-8 max-w-5xl mx-auto pb-12">
       {/* Header */}
       <div className="space-y-1">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl ios-blue-gradient flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f]">
-              Document Intelligence
-            </h1>
-            <p className="text-[#86868b] text-sm">
-              Upload bank statements or ledger sheets — Monetra extracts every detail automatically.
-            </p>
-          </div>
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f]">
+          File Ingestion
+        </h1>
+        <p className="text-[#86868b] text-sm">
+          Upload bank statements or spreadsheets to sync with your ledgers.
+        </p>
       </div>
 
       {!parsedData ? (
