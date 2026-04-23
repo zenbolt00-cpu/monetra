@@ -463,37 +463,53 @@ async function processWithAI(text: string, txTypeOverride?: TxType): Promise<Par
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `
-      You are a professional financial data extractor. I will provide you with raw text extracted from a bank statement (PDF or Excel).
-      Your task is to extract all transactions and return them as a valid JSON array.
-      
-      JSON Structure for each transaction:
-      {
-        "date": "YYYY-MM-DD",
-        "amount": number,
-        "description": "Clean narration",
-        "reference": "UTR or Ref number if available",
-        "type": "PAYIN" or "PAYOUT",
-        "balance": number (optional),
-        "mode": "UPI/NEFT/IMPS/CASH etc." (optional)
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-pro",
+      generationConfig: {
+        temperature: 0.1, // Low temperature for high precision
+        topP: 0.95,
+        responseMimeType: "application/json",
       }
+    });
 
-      Rules:
-      1. If the amount is credited/deposited/received, type is "PAYIN".
-      2. If the amount is debited/withdrawn/paid, type is "PAYOUT".
-      3. ${txTypeOverride ? `OVERRIDE: All transactions must be classified as ${txTypeOverride}.` : "Detect type automatically."}
-      4. Ensure all amounts are positive numbers.
-      5. Extract the UTR/Reference number accurately.
-      6. Return ONLY the JSON array. No markdown, no explanation.
+    const prompt = `
+      You are the Monetra Document Intelligence Engine, powered by Google's most advanced financial knowledge.
+      Your goal is to extract EXACT and CORRECT transaction data from the provided bank statement text.
 
-      Raw Text:
-      ${text.substring(0, 30000)}
+      MONETRA KNOWLEDGE BASE (INDIAN BANKING):
+      - UPI: Usually looks like "UPI-ID-Name" or "UPI/123456789012/Narration". The 12-digit number is the RRN (Reference Number).
+      - NEFT/RTGS: Often starts with a bank code (e.g., SBIN, HDFC, ICIC) followed by a 10-16 character alphanumeric UTR.
+      - IMPS: Usually has a 12-digit RRN similar to UPI.
+      - CHEQUE: Look for "CHQ NO", "CHEQUE NO" or 6-digit standalone numbers.
+      - CHARGES: "CONSOLIDATED CHARGES", "GST", "ANNUAL FEE" are PAYOUTs.
+      - INTEREST: "INTEREST PAID", "INT.CREDIT" are PAYINs.
+
+      JSON STRUCTURE (STRICT):
+      [
+        {
+          "date": "YYYY-MM-DD",
+          "amount": number (Positive only),
+          "description": "Cleaned narration without the reference number",
+          "reference": "Clean UTR/RRN/Ref number",
+          "type": "PAYIN" | "PAYOUT",
+          "balance": number (Optional),
+          "mode": "UPI" | "NEFT" | "IMPS" | "CASH" | "CHEQUE" | "TRANSFER"
+        }
+      ]
+
+      RULES:
+      1. Extraction must be 100% exact. Do not hallucinate.
+      2. If a reference number is found inside a description, extract it into the "reference" field and remove it from "description".
+      3. ${txTypeOverride ? `FORCE: All transactions are ${txTypeOverride}.` : "Deduce type from keywords like 'Cr', 'Dr', 'Deposit', 'Withdrawal', 'Sent to', 'Received from'."}
+      4. Ensure all amounts are numeric. No commas or currency symbols.
+
+      RAW STATEMENT TEXT:
+      ${text.substring(0, 40000)}
     `;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    const jsonText = response.text().replace(/```json|```/g, "").trim();
+    const jsonText = response.text().trim();
     const data = JSON.parse(jsonText);
 
     return data.map((item: any, index: number) => ({
@@ -509,7 +525,7 @@ async function processWithAI(text: string, txTypeOverride?: TxType): Promise<Par
       rawData: JSON.stringify(item)
     }));
   } catch (error) {
-    console.error("AI Extraction failed:", error);
+    console.error("Gemini 1.5 Pro Extraction failed:", error);
     return [];
   }
 }

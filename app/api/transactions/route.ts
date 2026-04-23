@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { logAudit } from "@/lib/auditLogger";
+import { encrypt, decrypt } from "@/lib/encryption";
 
 export async function GET(req: NextRequest) {
   try {
@@ -63,8 +64,15 @@ export async function GET(req: NextRequest) {
       prisma.transaction.count({ where }),
     ]);
 
+    // Decrypt fields for display
+    const decryptedTransactions = transactions.map((tx: any) => ({
+      ...tx,
+      description: tx.description ? decrypt(tx.description) : tx.description,
+      reference: tx.reference ? decrypt(tx.reference) : tx.reference,
+    }));
+
     return NextResponse.json({
-      transactions,
+      transactions: decryptedTransactions,
       total,
       page,
       totalPages: Math.ceil(total / limit),
@@ -98,8 +106,8 @@ export async function POST(req: NextRequest) {
         type: body.type,
         amount: typeof body.amount === "number" ? body.amount : parseFloat(body.amount),
         date: new Date(body.date),
-        description: body.description || "No description",
-        reference: body.reference || null,
+        description: body.description ? encrypt(body.description) : encrypt("No description"),
+        reference: body.reference ? encrypt(body.reference) : null,
         balance: body.balance ? parseFloat(String(body.balance)) : null,
         cellColor: body.cellColor || null,
         status: body.status || "CONFIRMED",
@@ -112,6 +120,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Decrypt for response
+    const decryptedTx = {
+      ...transaction,
+      description: transaction.description ? decrypt(transaction.description) : transaction.description,
+      reference: transaction.reference ? decrypt(transaction.reference) : transaction.reference,
+    };
+
     await logAudit({
       action: "CREATE",
       entity: "Transaction",
@@ -119,10 +134,10 @@ export async function POST(req: NextRequest) {
       actorId: (session.user as any).id,
       actorName: session.user?.name || "Unknown",
       actorRole: (session.user as any).role,
-      after: transaction,
+      after: decryptedTx,
     });
 
-    return NextResponse.json(transaction);
+    return NextResponse.json(decryptedTx);
   } catch (error: any) {
     console.error("[TRANSACTIONS_POST] error:", error);
     return NextResponse.json(

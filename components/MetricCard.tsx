@@ -67,7 +67,7 @@ export default function MetricCard({
       </div>
       
       <div className="space-y-1 relative z-10">
-        <h3 className="text-3xl font-bold tracking-tight text-[#1d1d1f] leading-none tabular-nums">
+        <h3 className="text-3xl font-extrabold tracking-tight text-[#1d1d1f] leading-none tabular-nums">
           {isCurrency ? formatCurrency(value) : value.toLocaleString()}
         </h3>
         {trend !== undefined && (
@@ -89,7 +89,7 @@ export default function MetricCard({
               )}
               {Math.abs(trend)}%
             </div>
-            <span className="text-[10px] font-medium text-[#86868b]">
+            <span className="text-[10px] font-semibold text-[#86868b]">
               vs last month
             </span>
           </div>

@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { logAudit } from "@/lib/auditLogger";
 import { FileStatus, TxStatus, TxType } from "@prisma/client";
+import { encrypt } from "@/lib/encryption";
 
 export async function POST(req: NextRequest) {
   try {
@@ -72,13 +73,16 @@ export async function POST(req: NextRequest) {
         if (txType === "PAYIN") totalPayin += amount;
         else totalPayout += amount;
 
+        const encryptedDescription = tx.description ? encrypt(tx.description) : encrypt("No description");
+        const encryptedReference = tx.reference ? encrypt(tx.reference) : null;
+
         return prisma.transaction.create({
           data: {
             type: txType,
             amount: isNaN(amount) ? 0 : amount,
             date: new Date(tx.date),
-            description: tx.description || "No description",
-            reference: tx.reference || null,
+            description: encryptedDescription,
+            reference: encryptedReference,
             balance:
               tx.balance !== undefined && tx.balance !== null
                 ? typeof tx.balance === "number"

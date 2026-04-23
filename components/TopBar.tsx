@@ -51,6 +51,18 @@ export default function TopBar() {
             className="glass-input pl-9 pr-4 py-1.5 text-sm w-[280px] h-9 rounded-xl"
           />
         </div>
+
+        {/* Intelligence Badges */}
+        <div className="hidden lg:flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+            <span className="text-[10px] font-bold text-primary uppercase tracking-wider">Gemini 1.5 Pro Engine</span>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-ios-green/10 border border-ios-green/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-ios-green" />
+            <span className="text-[10px] font-bold text-ios-green uppercase tracking-wider">AES-256 Secured</span>
+          </div>
+        </div>
       </div>
 
       {/* Right Section */}

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import { decrypt } from "@/lib/encryption";
 
 export async function GET(req: NextRequest) {
   try {
@@ -73,6 +74,13 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    // Decrypt fields for display
+    const decryptedTransactions = recentTransactions.map((tx: any) => ({
+      ...tx,
+      description: tx.description ? decrypt(tx.description) : tx.description,
+      reference: tx.reference ? decrypt(tx.reference) : tx.reference,
+    }));
+
     return NextResponse.json({
       metrics: {
         totalPayin: totalPayin._sum.amount || 0,
@@ -84,7 +92,7 @@ export async function GET(req: NextRequest) {
         monthly: serializedMonthlyData,
       },
       topVendors: vendorsWithVolume.sort((a, b) => b.volume - a.volume),
-      recentTransactions,
+      recentTransactions: decryptedTransactions,
     });
   } catch (error: any) {
     console.error("Dashboard error:", error);
