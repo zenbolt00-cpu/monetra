@@ -36,6 +36,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Resolved vendor ID
+    const resolvedVendorId =
+      !file.vendorId || file.vendorId === "admin" ? null : file.vendorId;
+
     // Check if sourceFile already exists (created during upload)
     let sourceFileId = file.id;
 
@@ -46,7 +50,7 @@ export async function POST(req: NextRequest) {
           fileType: file.fileType,
           fileUrl: file.fileUrl,
           fileSize: file.fileSize,
-          vendorId: file.vendorId,
+          vendorId: resolvedVendorId,
           uploadedBy: (session.user as any).id,
           status: FileStatus.DONE,
           totalRows: transactions.length,
@@ -146,6 +150,9 @@ export async function POST(req: NextRequest) {
             date: new Date(tx.date),
             description: encryptedDescription,
             reference: encryptedReference,
+            vendorName: tx.vendor_name || null,
+            bankName: tx.bank_name || null,
+            accountNumber: tx.account_number || null,
             balance:
               tx.balance !== undefined && tx.balance !== null
                 ? typeof tx.balance === "number"
@@ -156,7 +163,7 @@ export async function POST(req: NextRequest) {
             cellColor: tx.cellColor || null,
             rawData: tx.rawData || null,
             status: TxStatus.CONFIRMED,
-            vendorId: file.vendorId || null,
+            vendorId: file.vendorId || resolvedVendorId || null,
             sourceFileId,
             createdBy: (session.user as any).id,
           },

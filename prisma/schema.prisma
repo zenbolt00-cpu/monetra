@@ -54,6 +54,7 @@ model Transaction {
   rowIndex        Int?        // original row number in source file
   cellColor       String?     // hex color of the row/cell in source file if present
   rawData         Json?       // full raw row as JSON from parse
+  vendorName      String?     // counterparty name extracted from statement
   vendor          Vendor?     @relation(fields: [vendorId], references: [id])
   vendorId        String?     // null = admin's own transaction
   sourceFile      SourceFile? @relation(fields: [sourceFileId], references: [id])

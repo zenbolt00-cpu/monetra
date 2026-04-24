@@ -25,12 +25,14 @@ const CREDIT_HEADERS = [
   "cr amount", "credit amount", "deposits", "money in", "credit(cr)",
   "credit (cr)", "cr.", "credits", "amount credited", "inflow",
   "receipt", "receipts", "deposits/credits", "pay-in amount",
+  "deposit amount", "total credit", "cr/dr", "cr / dr", "c/d", "received amount",
 ];
 const DEBIT_HEADERS = [
   "debit", "withdrawal", "dr", "paid", "payout", "pay-out",
   "dr amount", "debit amount", "withdrawals", "money out", "debit(dr)",
   "debit (dr)", "dr.", "debits", "amount debited", "outflow",
   "withdraw", "payment", "payments", "withdrawals/debits", "payout amount",
+  "withdrawal amount", "total debit", "paid amount", "dr/cr", "dr / cr", "d/c",
 ];
 const AMOUNT_HEADERS = [
   "amount", "pay", "value", "sum", "total", "txn amount",

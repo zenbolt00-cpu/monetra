@@ -38,6 +38,9 @@ interface Transaction {
   cellColor?: string | null;
   vendor?: { name: string };
   sourceFile?: { fileName: string };
+  createdAt?: string | Date;
+  vendorName?: string | null;
+  mode?: string | null;
 }
 
 interface TransactionTableProps {
@@ -198,9 +201,16 @@ export default function TransactionTable({
                   className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
                   onClick={() => handleSort("reference")}
                 >
-                  <div className="flex items-center gap-1">
-                    <Hash className="w-3 h-3" /> UTR / Reference <SortIcon col="reference" />
+                  <div className="flex items-center gap-1 font-bold text-primary">
+                    <Hash className="w-3 h-3" /> Reference No. <SortIcon col="reference" />
                   </div>
+                </TableHead>
+                <TableHead className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
+                  onClick={() => handleSort("type")}>
+                  Transaction Type <SortIcon col="type" />
+                </TableHead>
+                <TableHead className="caption-text">
+                  Vendor Name
                 </TableHead>
                 <TableHead
                   className="caption-text text-right cursor-pointer hover:text-[#1d1d1f] transition-colors"
@@ -208,20 +218,14 @@ export default function TransactionTable({
                 >
                   Amount <SortIcon col="amount" />
                 </TableHead>
-                <TableHead
-                  className="caption-text cursor-pointer hover:text-[#1d1d1f] transition-colors"
-                  onClick={() => handleSort("type")}
-                >
-                  Type <SortIcon col="type" />
-                </TableHead>
                 <TableHead className="caption-text">
                   Status
                 </TableHead>
-                <TableHead className="caption-text text-center">
-                  Color
+                <TableHead className="caption-text">
+                  Source File
                 </TableHead>
                 <TableHead className="caption-text">
-                  Source
+                  Imported On
                 </TableHead>
                 {(allowEdit || allowDelete) && (
                   <TableHead className="caption-text text-center">
@@ -260,12 +264,18 @@ export default function TransactionTable({
                   </TableCell>
                   <TableCell className="text-xs">
                     {tx.reference ? (
-                      <span className="font-mono text-[11px] font-semibold text-primary tracking-wide">
+                      <span className="font-mono text-[13px] font-bold text-primary tracking-tight bg-primary/5 px-2 py-1 rounded-md">
                         {tx.reference}
                       </span>
                     ) : (
                       <span className="text-[#c7c7cc] text-[10px] italic">—</span>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={tx.type} />
+                  </TableCell>
+                  <TableCell className="text-xs font-semibold text-[#1d1d1f]">
+                    {tx.vendor?.name || "Admin"}
                   </TableCell>
                   <TableCell
                     className={cn(
@@ -277,21 +287,7 @@ export default function TransactionTable({
                     {formatCurrency(tx.amount)}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={tx.type} />
-                  </TableCell>
-                  <TableCell>
                     <StatusBadge status={tx.status} />
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {tx.cellColor ? (
-                      <div
-                        className="w-3.5 h-3.5 rounded-full border border-black/10 mx-auto shadow-sm"
-                        style={{ backgroundColor: tx.cellColor }}
-                        title={`Source color: ${tx.cellColor}`}
-                      />
-                    ) : (
-                      <div className="w-3.5 h-3.5 rounded-full border border-black/[0.04] mx-auto" />
-                    )}
                   </TableCell>
                   <TableCell>
                     {tx.sourceFile?.fileName ? (
@@ -306,6 +302,9 @@ export default function TransactionTable({
                         Manual
                       </span>
                     )}
+                  </TableCell>
+                  <TableCell className="text-[11px] text-[#86868b] whitespace-nowrap">
+                    {tx.createdAt ? new Date(tx.createdAt).toLocaleString() : "—"}
                   </TableCell>
                   {(allowEdit || allowDelete) && (
                     <TableCell>

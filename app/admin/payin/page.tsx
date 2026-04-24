@@ -130,26 +130,59 @@ export default function AdminPayinPage() {
         </div>
       </div>
 
-      <div className="glass p-1 rounded-2xl border-black/5 flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-3 px-4 py-2 border-r border-black/10">
+      <div className="glass p-4 rounded-2xl border-black/5 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-3 px-4 border-r border-black/10">
           <Filter className="w-4 h-4 text-primary" />
           <span className="text-[10px] uppercase font-bold tracking-widest text-[#86868b]">
-            Filters
+            Advanced Filters
           </span>
         </div>
 
-        <div className="ml-auto w-px h-6 bg-black/10 mx-2" />
+        <div className="flex items-center gap-2">
+          <input 
+            type="date" 
+            className="glass-input text-xs px-2 py-1" 
+            onChange={(e) => {/* Implement date filter logic */}}
+          />
+          <span className="text-[#86868b]">to</span>
+          <input 
+            type="date" 
+            className="glass-input text-xs px-2 py-1"
+            onChange={(e) => {/* Implement date filter logic */}}
+          />
+        </div>
 
-        <div className="px-4">
-          <p className="text-[10px] text-[#86868b] uppercase font-bold tracking-widest">
-            Total Pay-in Volume
-          </p>
-          <p className="text-sm font-bold text-ios-green">
-            ₹
-            {transactions
-              .reduce((sum, tx) => sum + tx.amount, 0)
-              .toLocaleString("en-IN")}
-          </p>
+        <select 
+          className="glass-input text-xs px-3 py-1"
+          onChange={(e) => {/* Implement type filter logic */}}
+        >
+          <option value="">All Types</option>
+          <option value="PAYIN">Pay-in</option>
+          <option value="PAYOUT">Payout</option>
+        </select>
+
+        <select 
+          className="glass-input text-xs px-3 py-1"
+          onChange={(e) => {/* Implement vendor filter logic */}}
+        >
+          <option value="">All Vendors</option>
+          {vendors.map(v => (
+            <option key={v.id} value={v.id}>{v.name}</option>
+          ))}
+        </select>
+
+        <div className="ml-auto flex items-center gap-6">
+          <div className="px-4 border-l border-black/10">
+            <p className="text-[10px] text-[#86868b] uppercase font-bold tracking-widest">
+              Filtered Volume
+            </p>
+            <p className="text-sm font-bold text-ios-green">
+              ₹
+              {transactions
+                .reduce((sum, tx) => sum + tx.amount, 0)
+                .toLocaleString("en-IN")}
+            </p>
+          </div>
         </div>
       </div>
 

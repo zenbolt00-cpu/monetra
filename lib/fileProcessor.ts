@@ -5,24 +5,7 @@ import { detectColumns } from "./columnDetector";
 // Dynamic import for pdf-parse to avoid top-level issues on Vercel
 let PDFParseClass: any = null;
 
-// Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
-if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
-  (global as any).DOMMatrix = class DOMMatrix {
-    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
-    m11 = 1; m12 = 0; m13 = 0; m14 = 0;
-    m21 = 0; m22 = 1; m23 = 0; m24 = 0;
-    m31 = 0; m32 = 0; m33 = 1; m34 = 0;
-    m41 = 0; m42 = 0; m43 = 0; m44 = 1;
-    is2D = true;
-    isIdentity = true;
-    constructor(init?: any) {
-      if (Array.isArray(init) && init.length >= 6) {
-        [this.a, this.b, this.c, this.d, this.e, this.f] = init;
-      }
-    }
-    toString() { return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`; }
-  };
-}
+// Types and interfaces
 
 export interface ParsedRow {
   date: Date;
@@ -41,6 +24,7 @@ export interface ParsedRow {
   accountNumber?: string;
   time?: string;
   mode?: string; // NEFT, RTGS, IMPS, UPI etc.
+  vendor_name?: string | null;
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -458,215 +442,338 @@ export async function processExcel(
 }
 
 /* ──────────────────────────────────────────────────────────
- *  PDF PROCESSOR – Inbuilt Local Intelligence Engine
- *  Uses pdf-parse v2.4.5 API: getTable() + getText()
+ *  HIGH-PRECISION COORDINATE-BASED PDF PARSER
+ *  Reconstructs tables by analyzing (x,y) text positions.
  * ────────────────────────────────────────────────────────── */
+async function extractHighPrecisionTables(buffer: Buffer): Promise<string[][][]> {
+  // Use legacy build for Node.js environments to prevent "Object.defineProperty called on non-object" errors
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // Set worker to local path for Node.js
+  const path = require("path");
+  pdfjs.GlobalWorkerOptions.workerSrc = path.join(process.cwd(), "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs");
+
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true });
+  const pdf = await loadingTask.promise;
+  const allTables: string[][][] = [];
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const items = content.items as any[];
+
+    if (items.length === 0) continue;
+
+    // Group items into rows based on Y coordinate
+    // items have transform: [scaleX, skewY, skewX, scaleY, x, y]
+    const rowsMap = new Map<number, any[]>();
+    const rowTolerance = 5; // units
+
+    items.forEach(item => {
+      const y = Math.round(item.transform[5] / rowTolerance) * rowTolerance;
+      if (!rowsMap.has(y)) rowsMap.set(y, []);
+      rowsMap.get(y)!.push(item);
+    });
+
+    // Sort rows from top to bottom
+    const sortedY = Array.from(rowsMap.keys()).sort((a, b) => b - a);
+    
+    // Identify the best header row to define column structure
+    let bestHeaderY = -1;
+    let maxHeaderScore = 0;
+    const headerKeywords = ["date", "particulars", "description", "narration", "ref", "utr", "chq", "withdrawal", "deposit", "debit", "credit", "amount", "balance"];
+    
+    for (const y of sortedY) {
+      const rowText = rowsMap.get(y)!.map(it => it.str.toLowerCase()).join(" ");
+      const score = headerKeywords.filter(k => rowText.includes(k)).length;
+      if (score > maxHeaderScore) {
+        maxHeaderScore = score;
+        bestHeaderY = y;
+      }
+    }
+
+    // Define column boundaries based on the detected header row or all items
+    let colBoundaries: number[] = [];
+    if (bestHeaderY !== -1) {
+      const headerItems = rowsMap.get(bestHeaderY)!.sort((a, b) => a.transform[4] - b.transform[4]);
+      colBoundaries = headerItems.map(it => it.transform[4]);
+    } else {
+      // Fallback to clustering if no clear header row found
+      const allX = items.map(it => it.transform[4]).sort((a, b) => a - b);
+      if (allX.length > 0) {
+        let currentGroup = [allX[0]];
+        for (let j = 1; j < allX.length; j++) {
+          if (allX[j] - allX[j-1] < 15) { // Increased clustering tolerance
+            currentGroup.push(allX[j]);
+          } else {
+            colBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
+            currentGroup = [allX[j]];
+          }
+        }
+        colBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
+      }
+    }
+
+    const pageData: string[][] = [];
+    for (const y of sortedY) {
+      const rowItems = rowsMap.get(y)!.sort((a, b) => a.transform[4] - b.transform[4]);
+      const rowData = new Array(colBoundaries.length).fill("");
+      
+      rowItems.forEach(item => {
+        const x = item.transform[4];
+        // Find the closest column boundary
+        let bestCol = 0;
+        let minDiff = Math.abs(x - colBoundaries[0]);
+        for (let k = 1; k < colBoundaries.length; k++) {
+          const diff = Math.abs(x - colBoundaries[k]);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestCol = k;
+          }
+        }
+        // Append text with space
+        rowData[bestCol] = (rowData[bestCol] + " " + item.str).trim();
+      });
+
+      // Filter out noise: rows with at least 2 non-empty cells
+      if (rowData.filter(c => c.length > 0).length >= 2) {
+        pageData.push(rowData);
+      }
+    }
+    
+    if (pageData.length > 0) allTables.push(pageData);
+  }
+
+  return allTables;
+}
+
 export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  console.log("[PDF] Starting extraction with pdf-parse v2 engine...");
+  // Scoped polyfill for DOMMatrix and navigator in Node.js
+  if (typeof globalThis !== "undefined") {
+    if (!(globalThis as any).navigator) (globalThis as any).navigator = { userAgent: "node" };
+    if (!(globalThis as any).DOMMatrix) {
+      (globalThis as any).DOMMatrix = class DOMMatrix {
+        a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+        m11 = 1; m12 = 0; m13 = 0; m14 = 0; m21 = 0; m22 = 1; m23 = 0; m24 = 0;
+        m31 = 0; m32 = 0; m33 = 1; m34 = 0; m41 = 0; m42 = 0; m43 = 0; m44 = 1;
+        is2D = true; isIdentity = true;
+        constructor(init?: any) { if (Array.isArray(init) && init.length >= 6) [this.a, this.b, this.c, this.d, this.e, this.f] = init; }
+        toString() { return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`; }
+      };
+    }
+  }
+
+  console.log("[PDF Engine] Starting High-Precision Coordinate Extraction...");
 
   const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
   let rows: ParsedRow[] = [];
 
-  let parser: any;
   try {
-    if (!PDFParseClass) {
-      const mod = await import("pdf-parse");
-      PDFParseClass = mod.PDFParse;
+    // 1. Primary Strategy: High-Precision Coordinate-based Reconstruction
+    const tables = await extractHighPrecisionTables(buffer);
+    if (tables.length > 0) {
+      rows = extractFromTables(tables, txTypeOverride);
+      console.log(`[PDF Engine] Coordinate extraction found ${rows.length} transactions.`);
     }
-    // pdf-parse v2.4.5: default export IS the PDFParse class
-    parser = new PDFParseClass({ data: new Uint8Array(buffer) } as any);
-  } catch (initErr: any) {
-    console.error("[PDF] Parser init error:", initErr);
-    return { rows: [], headers };
-  }
 
-  // ── STRATEGY 1: Try structured table extraction first ──
-  try {
-    const tableResult = await parser.getTable();
-    if (tableResult && tableResult.pages) {
-      console.log(`[PDF] Table extraction found ${tableResult.total} table(s)`);
-      rows = extractFromTables(tableResult, txTypeOverride);
-    }
-  } catch (tableErr) {
-    console.warn("[PDF] Table extraction unavailable, falling back to text:", tableErr);
-  }
-
-  // ── STRATEGY 2: Fall back to raw text extraction ──
-  if (rows.length === 0) {
-    try {
-      const textResult = await parser.getText();
-      const textContent = textResult?.text || "";
-      console.log(`[PDF] Text extraction got ${textContent.length} chars`);
-      if (textContent.trim().length >= 10) {
-        rows = extractFromText(textContent, txTypeOverride);
-      } else {
-        console.warn("[PDF] Document appears empty or scanned (needs OCR).");
+    // 2. Fallback: Standard PDF-Parse (if HP failed or returned zero rows)
+    if (rows.length === 0) {
+      console.log("[PDF Engine] HP failed or empty, using standard parser...");
+      if (!PDFParseClass) {
+        const mod: any = await import("pdf-parse");
+        PDFParseClass = mod.PDFParse || mod.default?.PDFParse || mod.default;
       }
-    } catch (textErr) {
-      console.error("[PDF] Text extraction error:", textErr);
+      
+      let parser;
+      if (typeof PDFParseClass === "function" && PDFParseClass.prototype?.constructor) {
+        parser = new PDFParseClass({ data: new Uint8Array(buffer) } as any);
+        const tableResult = await parser.getTable();
+        if (tableResult?.pages?.length > 0) {
+          const allTables: string[][][] = [];
+          for (const page of tableResult.pages) {
+            if (page.tables?.length > 0) allTables.push(...page.tables);
+          }
+          rows = extractFromTables(allTables, txTypeOverride);
+        }
+        await parser.destroy();
+      }
     }
+
+    // 3. Last Resort: Raw Text Parsing
+    if (rows.length === 0) {
+      console.log("[PDF Engine] Table parsing failed, trying raw text...");
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true });
+      const pdf = await loadingTask.promise;
+      let fullText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        fullText += content.items.map((it: any) => it.str).join(" ") + "\n";
+      }
+      rows = extractFromText(fullText, txTypeOverride);
+    }
+
+  } catch (err: any) {
+    console.error("[PDF Engine] Global Extraction Error:", err);
+    throw new Error(`PDF Parsing Error: ${err.message}. Please ensure the PDF is not password protected.`);
   }
 
-  // Cleanup parser
-  try { await parser.destroy(); } catch (_) {}
-
-  console.log(`[PDF] Extraction complete. Found ${rows.length} valid transactions.`);
+  // Post-process: Deduplicate and clean
+  rows = rows.filter(r => r.amount > 0 && r.date);
+  
   return { rows, headers };
 }
 
 /* ──────────────────────────────────────────────────────────
- *  Extract transactions from structured table data
+ *  Extract from Tables with Multi-Page Awareness
  * ────────────────────────────────────────────────────────── */
-function extractFromTables(tableResult: any, txTypeOverride?: TxType): ParsedRow[] {
-  const rows: ParsedRow[] = [];
+function extractFromTables(tables: string[][][], txTypeOverride?: TxType): ParsedRow[] {
+  const allParsedRows: ParsedRow[] = [];
+  let currentMapping: any = null;
 
-  // Gather all tables from all pages (+ mergedTables if available)
-  const allTables: string[][][] = [];
-  if (tableResult.mergedTables?.length) {
-    allTables.push(...tableResult.mergedTables);
-  }
-  for (const page of tableResult.pages || []) {
-    if (page.tables?.length) {
-      allTables.push(...page.tables);
+  for (const table of tables) {
+    if (!table || table.length < 1) continue;
+
+    // Detect columns for each table segment (in case mapping changes)
+    const headerLimit = Math.min(table.length, 5);
+    let mapping: any = null;
+    let headerIdx = -1;
+
+    for (let i = 0; i < headerLimit; i++) {
+      const m = detectColumns(table[i]);
+      if (m.date && (m.amount || m.credit || m.debit)) {
+        mapping = m;
+        headerIdx = i;
+        break;
+      }
     }
-  }
 
-  for (const table of allTables) {
-    if (!table || table.length < 2) continue;
+    if (!mapping && currentMapping) {
+      mapping = currentMapping; // Use previous table's mapping if this looks like a continuation
+    } else if (mapping) {
+      currentMapping = mapping;
+    }
 
-    // First row is likely the header – detect column mapping
-    const headerRow = table[0].map((h: string) => (h || "").trim());
-    const mapping = detectColumns(headerRow);
+    if (!mapping) continue;
 
-    // If we can't even find a date column, skip this table
-    if (!mapping.date && !mapping.amount && !mapping.credit && !mapping.debit) continue;
+    const startRow = headerIdx === -1 ? 0 : headerIdx + 1;
+    const headers = table[headerIdx === -1 ? 0 : headerIdx];
 
-    const colIndex = (name?: string) => {
-      if (!name) return -1;
-      return headerRow.findIndex((h: string) =>
-        h.toLowerCase().trim() === name.toLowerCase().trim()
-      );
-    };
+    const getCol = (key: string) => headers.findIndex(h => h.toLowerCase().includes(key.toLowerCase()));
+    
+    // Better column finding based on detected mapping
+    const dateIdx = headers.indexOf(mapping.date);
+    const descIdx = headers.indexOf(mapping.description);
+    const amountIdx = headers.indexOf(mapping.amount);
+    const creditIdx = headers.indexOf(mapping.credit);
+    const debitIdx = headers.indexOf(mapping.debit);
+    const balanceIdx = headers.indexOf(mapping.balance);
+    const refIdx = headers.indexOf(mapping.reference);
 
-    const dateIdx = colIndex(mapping.date);
-    const descIdx = colIndex(mapping.description);
-    const refIdx = colIndex(mapping.reference);
-    const creditIdx = colIndex(mapping.credit);
-    const debitIdx = colIndex(mapping.debit);
-    const amountIdx = colIndex(mapping.amount);
-    const balanceIdx = colIndex(mapping.balance);
-    const typeIdx = colIndex(mapping.type);
-
-    for (let r = 1; r < table.length; r++) {
+    for (let r = startRow; r < table.length; r++) {
       const row = table[r];
-      if (!row || row.length < 2) continue;
-
-      // Get date
-      const dateStr = dateIdx >= 0 ? (row[dateIdx] || "").trim() : "";
-      if (!dateStr) continue;
-      const date = parseDate(dateStr);
-      if (isNaN(date.getTime())) continue;
-
-      // Get amount & type
-      let amount: number;
-      let type: TxType;
-
-      if (creditIdx >= 0 && debitIdx >= 0) {
-        const creditVal = parseNumber(row[creditIdx]);
-        const debitVal = parseNumber(row[debitIdx]);
-        if (!isNaN(creditVal) && creditVal > 0) {
-          amount = creditVal;
-          type = TxType.PAYIN;
-        } else if (!isNaN(debitVal) && debitVal > 0) {
-          amount = debitVal;
-          type = TxType.PAYOUT;
-        } else if (!isNaN(creditVal) && creditVal !== 0) {
-          amount = Math.abs(creditVal);
-          type = TxType.PAYIN;
-        } else if (!isNaN(debitVal) && debitVal !== 0) {
-          amount = Math.abs(debitVal);
-          type = TxType.PAYOUT;
-        } else {
-          continue;
+      const dateStr = dateIdx >= 0 ? row[dateIdx] : "";
+      if (!dateStr || dateStr.length < 5) {
+        // Multi-line description support
+        if (allParsedRows.length > 0 && descIdx >= 0 && row[descIdx]) {
+          allParsedRows[allParsedRows.length - 1].description += " " + row[descIdx];
         }
-      } else if (amountIdx >= 0) {
-        const rawAmount = parseNumber(row[amountIdx]);
-        if (isNaN(rawAmount) || rawAmount === 0) continue;
-        amount = Math.abs(rawAmount);
-        if (typeIdx >= 0) {
-          const tv = (row[typeIdx] || "").toLowerCase().trim();
-          if (["cr", "credit", "c", "payin", "pay-in", "receipt"].includes(tv)) {
-            type = TxType.PAYIN;
-          } else if (["dr", "debit", "d", "payout", "pay-out", "payment"].includes(tv)) {
-            type = TxType.PAYOUT;
-          } else {
-            type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
-          }
-        } else {
-          type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
-        }
-      } else {
         continue;
       }
 
-      if (txTypeOverride) type = txTypeOverride;
+      const date = parseDate(dateStr);
+      if (isNaN(date.getTime())) continue;
 
-      const description = descIdx >= 0 ? (row[descIdx] || "").trim() : "Transaction";
-      let reference = refIdx >= 0 ? (row[refIdx] || "").trim() : "";
-      if (!reference || reference.length < 4) {
-        reference = extractReference(description) || "";
-        if (!reference) {
-          const allText = row.join(" ");
-          reference = extractReference(allText) || "";
+      let amount = 0;
+      let type: TxType = TxType.PAYIN;
+
+      // Priority 1: Check separate credit/debit columns
+      if (creditIdx >= 0 && row[creditIdx]) {
+        const val = parseNumber(row[creditIdx]);
+        if (!isNaN(val) && val !== 0) {
+          amount = val;
+          type = TxType.PAYIN;
+        }
+      }
+      
+      if (amount === 0 && debitIdx >= 0 && row[debitIdx]) {
+        const val = parseNumber(row[debitIdx]);
+        if (!isNaN(val) && val !== 0) {
+          amount = val;
+          type = TxType.PAYOUT;
         }
       }
 
-      const balance = balanceIdx >= 0 ? parseNumber(row[balanceIdx]) : undefined;
-      const mode = detectTransactionMode(description + " " + (reference || ""));
-      const time = extractTime(row.join(" "));
+      // Priority 2: Single amount column with a type/indicator column
+      if (amount === 0 && amountIdx >= 0 && row[amountIdx]) {
+        const val = parseNumber(row[amountIdx]);
+        if (!isNaN(val) && val !== 0) {
+          amount = Math.abs(val);
+          // Check for indicator in the same cell or separate type column
+          const rawAmountStr = String(row[amountIdx]).toLowerCase();
+          const typeStr = mapping.type ? String(row[headers.indexOf(mapping.type)] || "").toLowerCase() : "";
+          
+          if (rawAmountStr.includes("cr") || typeStr.includes("cr") || typeStr.includes("credit") || typeStr.includes("deposit") || typeStr.includes("payin")) {
+            type = TxType.PAYIN;
+          } else if (rawAmountStr.includes("dr") || typeStr.includes("dr") || typeStr.includes("debit") || typeStr.includes("withdrawal") || typeStr.includes("payout")) {
+            type = TxType.PAYOUT;
+          } else {
+            type = val < 0 ? TxType.PAYOUT : TxType.PAYIN;
+          }
+        }
+      }
 
-      rows.push({
+      if (amount === 0) continue;
+      if (txTypeOverride) type = txTypeOverride;
+
+      const description = descIdx >= 0 ? row[descIdx].trim() : "Transaction";
+      const reference = refIdx >= 0 ? row[refIdx].trim() : extractReference(description + " " + row.join(" "));
+      const balance = balanceIdx >= 0 ? parseNumber(row[balanceIdx]) : undefined;
+
+      allParsedRows.push({
         date,
         amount,
-        description: description || "Transaction",
+        description,
         reference: reference || undefined,
         type,
-        balance: balance && !isNaN(balance) ? balance : undefined,
-        rowIndex: r,
-        rawData: Object.fromEntries(headerRow.map((h: string, i: number) => [h, row[i] || ""])),
+        balance: isNaN(balance as number) ? undefined : balance,
+        rowIndex: allParsedRows.length + 1,
+        rawData: row,
         isExcluded: false,
-        mode,
-        time,
+        mode: detectTransactionMode(description),
+        vendor_name: description.split(" ").slice(0, 2).join(" ")
       });
     }
   }
 
-  return rows;
+  return allParsedRows;
 }
 
 /* ──────────────────────────────────────────────────────────
- *  Extract transactions from raw text (fallback)
+ *  Intelligent Text Parsing (Regex Based Engine)
  * ────────────────────────────────────────────────────────── */
-function extractFromText(textContent: string, txTypeOverride?: TxType): ParsedRow[] {
+function extractFromText(text: string, txTypeOverride?: TxType): ParsedRow[] {
   const rows: ParsedRow[] = [];
-  const lines = textContent.split("\n");
+  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
 
+  // Common Bank Statement Regex Patterns
   const datePatterns = [
     /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3,9})[/\-. ](?:\d{4}|\d{2}))/i,
     /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})/i,
     /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/,
   ];
-  const amountPattern = /(?:\b|-)(?:\d{1,3}(?:,\d{2,3})*|\d+)(?:\.\d{1,2})?\b/g;
+  
+  const amountPattern = /(?:\s|^)(-?\d{1,3}(?:,\d{3})*(?:\.\d{2}))(?:\s|$)/g;
 
-  let currentTx: Partial<ParsedRow> | null = null;
+  let currentTx: any = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.length < 5) continue;
-
+    const line = lines[i];
+    
+    // 1. Detect Date
     let foundDate: Date | null = null;
     let dateStr = "";
     for (const p of datePatterns) {
@@ -682,74 +789,67 @@ function extractFromText(textContent: string, txTypeOverride?: TxType): ParsedRo
     }
 
     if (foundDate) {
-      if (currentTx && currentTx.date && currentTx.amount) {
-        rows.push(currentTx as ParsedRow);
-      }
+      // Save previous if valid
+      if (currentTx && currentTx.amount) rows.push(currentTx);
 
+      // Start new transaction
       currentTx = {
         date: foundDate,
         description: line.replace(dateStr, "").trim(),
         rowIndex: rows.length + 1,
         isExcluded: false,
         rawData: line,
+        type: TxType.PAYIN, // Default
       };
 
-      const amountsFound = line.match(amountPattern) || [];
-      const parsedAmounts = amountsFound
-        .map((a) => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter((a) => a.value > 0.01);
-
-      if (parsedAmounts.length > 0) {
-        currentTx.amount = parsedAmounts[0].value;
-        if (parsedAmounts.length >= 2) {
-          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
-          if (parsedAmounts.length >= 3) {
-            currentTx.amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
-          }
+      // 2. Detect Amounts in the same line
+      const amounts = Array.from(line.matchAll(amountPattern));
+      if (amounts.length > 0) {
+        const firstAmount = parseNumber(amounts[0][1]);
+        currentTx.amount = Math.abs(firstAmount);
+        currentTx.type = firstAmount < 0 ? TxType.PAYOUT : TxType.PAYIN;
+        
+        if (amounts.length >= 2) {
+          const secondAmount = parseNumber(amounts[amounts.length - 1][1]);
+          currentTx.balance = Math.abs(secondAmount);
+          // If first is smaller than second, first is likely the tx amount and second is balance
         }
       }
 
+      // 3. Extract Reference
       currentTx.reference = extractReference(line);
       currentTx.mode = detectTransactionMode(line);
-      currentTx.time = extractTime(line);
-      currentTx.type =
-        txTypeOverride ||
-        (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/)
-          ? TxType.PAYOUT
-          : TxType.PAYIN);
-    } else if (currentTx) {
-      currentTx.description += " " + line;
-      currentTx.rawData += "\n" + line;
-
-      const amountsFound = line.match(amountPattern) || [];
-      const parsedAmounts = amountsFound
-        .map((a) => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter((a) => a.value > 0.01);
-
-      if (parsedAmounts.length > 0 && !currentTx.amount) {
-        currentTx.amount = parsedAmounts[0].value;
-        if (parsedAmounts.length >= 2) {
-          currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
+      
+      // Simple vendor name heuristic
+      currentTx.vendor_name = currentTx.description.split(/[\/\-\s]/).filter((w: string) => w.length > 2 && !/^\d+$/.test(w)).slice(0, 2).join(" ");
+      
+      if (txTypeOverride) currentTx.type = txTypeOverride;
+      else {
+        // Heuristic for type based on keywords
+        if (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|sent/)) {
+          currentTx.type = TxType.PAYOUT;
         }
       }
-
+    } else if (currentTx) {
+      // Continuation line
+      currentTx.description += " " + line;
+      
+      // Check for amounts if not found in first line
+      if (!currentTx.amount) {
+        const amounts = Array.from(line.matchAll(amountPattern));
+        if (amounts.length > 0) {
+          const firstAmount = parseNumber(amounts[0][1]);
+          currentTx.amount = Math.abs(firstAmount);
+          currentTx.type = firstAmount < 0 ? TxType.PAYOUT : TxType.PAYIN;
+        }
+      }
+      
       if (!currentTx.reference) currentTx.reference = extractReference(line);
-      if (!currentTx.mode) currentTx.mode = detectTransactionMode(line);
     }
   }
 
-  if (currentTx && currentTx.date && currentTx.amount) {
-    rows.push(currentTx as ParsedRow);
-  }
-
-  // Clean descriptions
-  rows.forEach((row) => {
-    if (row.reference) row.description = row.description.replace(row.reference, "");
-    const amounts = row.description.match(amountPattern) || [];
-    amounts.forEach((a) => (row.description = row.description.replace(a, "")));
-    row.description = row.description.replace(/\s+/g, " ").trim();
-    if (!row.description) row.description = "Transaction";
-  });
+  if (currentTx && currentTx.amount) rows.push(currentTx);
 
   return rows;
 }
+

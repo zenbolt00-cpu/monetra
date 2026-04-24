@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import FileUploadZone from "@/components/FileUploadZone";
 import ParsePreviewTable from "@/components/ParsePreviewTable";
-import { ParsedRow } from "@/lib/fileProcessor";
+import type { ParsedRow } from "@/lib/fileProcessor";
 import {
   Select,
   SelectContent,
@@ -65,7 +65,7 @@ export default function AdminUploadPage() {
     formData.append("txType", txType);
 
     try {
-      const res = await fetch("/api/upload", {
+      const res = await fetch("/api/parse-pdf", {
         method: "POST",
         body: formData,
       });
@@ -81,11 +81,11 @@ export default function AdminUploadPage() {
       if (!res.ok || data.error) throw new Error(data.error || "Upload failed");
 
       setParsedData({
-        rows: data.parsedData.rows,
-        file: data.file,
+        rows: data.transactions,
+        file: { fileName: data.filename, ...data.file },
       });
       toast.success(
-        `Extracted ${data.parsedData.rows.length} records successfully`
+        `${data.transactions.length} transactions extracted from ${data.filename}`
       );
     } catch (error: any) {
       toast.error(error.message || "Failed to upload file");
@@ -308,6 +308,24 @@ export default function AdminUploadPage() {
                 Verify amounts, dates, references and types. Toggle or exclude rows before importing.
               </p>
             </div>
+            {(parsedData as any).csvContent && (
+              <button
+                onClick={() => {
+                  const blob = new Blob([(parsedData as any).csvContent], { type: 'text/csv' });
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `extracted_${(parsedData as any).file.fileName || 'data'}.csv`;
+                  a.click();
+                  window.URL.revokeObjectURL(url);
+                  toast.success("CSV file downloaded");
+                }}
+                className="ml-auto flex items-center gap-2 px-4 py-2 bg-ios-blue text-white text-xs font-bold rounded-xl hover:bg-ios-blue/90 transition-colors shadow-sm"
+              >
+                <ArrowRight className="w-3 h-3 rotate-90" />
+                Download CSV
+              </button>
+            )}
           </div>
           <ParsePreviewTable
             rows={parsedData.rows}

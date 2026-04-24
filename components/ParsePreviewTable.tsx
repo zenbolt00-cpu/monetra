@@ -234,6 +234,9 @@ export default function ParsePreviewTable({
                     <Hash className="w-3 h-3" /> UTR / Reference
                   </div>
                 </TableHead>
+                <TableHead className="caption-text">
+                  Vendor
+                </TableHead>
                 <TableHead className="caption-text text-right">
                   Amount
                 </TableHead>
@@ -334,6 +337,9 @@ export default function ParsePreviewTable({
                             </span>
                           ))}
                       </div>
+                    </TableCell>
+                    <TableCell className="text-xs text-[#424245]">
+                      {(row as any).vendor_name || <span className="text-[#c7c7cc] italic">Not found</span>}
                     </TableCell>
                     <TableCell
                       className={cn(
