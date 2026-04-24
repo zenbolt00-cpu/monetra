@@ -113,22 +113,33 @@ export async function POST(req: NextRequest) {
     // Validation: Check for duplicate UTRs (references)
     const references = parsedData.rows
       .map((r: any) => r.reference)
-      .filter((ref: any) => ref && String(ref).trim().length > 0);
+      .filter((ref: any) => ref && String(ref).trim().length > 0)
+      .map((ref: any) => String(ref).trim());
 
-    const existingTransactions = await prisma.transaction.findMany({
-      where: {
-        reference: { in: references },
-      },
-      select: { reference: true },
-    });
+    // Since references are encrypted with random IVs, we must decrypt all existing refs to compare
+    let existingRefSet = new Set<string>();
+    if (references.length > 0) {
+      const { decrypt } = await import("@/lib/encryption");
+      const existingTransactions = await prisma.transaction.findMany({
+        where: { reference: { not: null } },
+        select: { reference: true },
+      });
+      for (const tx of existingTransactions) {
+        if (tx.reference) {
+          const decryptedRef = decrypt(tx.reference);
+          existingRefSet.add(decryptedRef.toLowerCase().trim());
+        }
+      }
+    }
 
-    const existingRefs = new Set(existingTransactions.map((t) => t.reference));
-    const fileRefs = new Set();
-    const fileDupes = new Set();
+    // Track duplicates within the file itself
+    const fileRefs = new Set<string>();
+    const fileDupes = new Set<string>();
 
     references.forEach((ref: string) => {
-      if (fileRefs.has(ref)) fileDupes.add(ref);
-      fileRefs.add(ref);
+      const refKey = ref.toLowerCase();
+      if (fileRefs.has(refKey)) fileDupes.add(refKey);
+      fileRefs.add(refKey);
     });
 
     // Mark rows with errors
@@ -137,15 +148,13 @@ export async function POST(req: NextRequest) {
       const ref = row.reference ? String(row.reference).trim() : null;
 
       if (ref) {
-        if (existingRefs.has(ref)) {
+        const refKey = ref.toLowerCase();
+        if (existingRefSet.has(refKey)) {
           errors.push("Duplicate UTR (already in database)");
         }
-        if (fileDupes.has(ref)) {
+        if (fileDupes.has(refKey)) {
           errors.push("Duplicate UTR (repeated in this file)");
         }
-      } else {
-        // If UTR is mandatory, flag it
-        // errors.push("Missing UTR/Reference");
       }
 
       return {

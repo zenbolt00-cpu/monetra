@@ -1,21 +1,25 @@
-import PDFParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import fs from "fs";
 
 async function test() {
   const buffer = fs.readFileSync('test_statement.pdf');
   try {
-      const parser = new (PDFParse as any).PDFParse({ data: buffer });
-      const textResult = await parser.getText();
-      console.log("Success with .PDFParse:", textResult.text);
-  } catch (e) {
-      console.log("Failed with .PDFParse", e.message);
-      try {
-        const parser2 = new (PDFParse as any)({ data: buffer });
-        const res2 = await parser2.getText();
-        console.log("Success with direct new:", res2.text);
-      } catch (e2) {
-        console.log("Failed direct new", e2.message);
+    const parser = new PDFParse({ data: new Uint8Array(buffer) } as any);
+    const textResult = await parser.getText();
+    console.log("Text extraction success:", textResult.text?.substring(0, 500));
+
+    const tableResult = await parser.getTable();
+    console.log("Tables found:", tableResult.total);
+    for (const page of tableResult.pages) {
+      for (const table of page.tables) {
+        console.log("Table rows:", table.length);
+        table.slice(0, 5).forEach((row: string[], i: number) => console.log(`  Row ${i}:`, row));
       }
+    }
+
+    await parser.destroy();
+  } catch (e: any) {
+    console.error("Error:", e.message);
   }
 }
 test();

@@ -5,7 +5,7 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { logAudit } from "@/lib/auditLogger";
 import { FileStatus, TxStatus, TxType } from "@prisma/client";
-import { encrypt } from "@/lib/encryption";
+import { encrypt, decrypt } from "@/lib/encryption";
 
 export async function POST(req: NextRequest) {
   try {
@@ -40,7 +40,6 @@ export async function POST(req: NextRequest) {
     let sourceFileId = file.id;
 
     if (!sourceFileId) {
-      // Fallback: create SourceFile if not created during upload
       const sourceFile = await prisma.sourceFile.create({
         data: {
           fileName: file.fileName,
@@ -57,24 +56,88 @@ export async function POST(req: NextRequest) {
       sourceFileId = sourceFile.id;
     }
 
-    // Create Transaction records
-    let totalPayin = 0;
-    let totalPayout = 0;
+    // ── DEDUPLICATION: Collect all references and check DB ──
+    const incomingRefs = activeTransactions
+      .map((tx: any) => tx.reference ? String(tx.reference).trim() : null)
+      .filter((ref: string | null): ref is string => !!ref && ref.length >= 4);
 
+    // Fetch ALL existing transactions to compare references (decrypt to compare)
+    let existingRefSet = new Set<string>();
+    if (incomingRefs.length > 0) {
+      const existingTxs = await prisma.transaction.findMany({
+        where: { reference: { not: null } },
+        select: { reference: true },
+      });
+      for (const tx of existingTxs) {
+        if (tx.reference) {
+          const decryptedRef = decrypt(tx.reference);
+          existingRefSet.add(decryptedRef.toLowerCase().trim());
+        }
+      }
+    }
+
+    // Also deduplicate within this batch
+    const batchRefSet = new Set<string>();
+
+    // Filter out duplicates
+    const uniqueTransactions = activeTransactions.filter((tx: any) => {
+      const ref = tx.reference ? String(tx.reference).trim() : null;
+      if (!ref || ref.length < 4) return true; // No ref = always include
+
+      const refKey = ref.toLowerCase();
+
+      // Skip if already in database
+      if (existingRefSet.has(refKey)) {
+        console.log(`[CONFIRM] Skipping duplicate (DB): ref=${ref}`);
+        return false;
+      }
+
+      // Skip if already seen in this batch
+      if (batchRefSet.has(refKey)) {
+        console.log(`[CONFIRM] Skipping duplicate (batch): ref=${ref}`);
+        return false;
+      }
+
+      batchRefSet.add(refKey);
+      return true;
+    });
+
+    if (uniqueTransactions.length === 0) {
+      // All were duplicates
+      await prisma.sourceFile.update({
+        where: { id: sourceFileId },
+        data: {
+          status: FileStatus.DONE,
+          parsedRows: 0,
+          totalRows: transactions.length,
+          errorLog: "All transactions were duplicates (already in database).",
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        sourceFileId,
+        count: 0,
+        skipped: activeTransactions.length,
+        message: "All transactions already exist in the database (merged).",
+        totalPayin: 0,
+        totalPayout: 0,
+      });
+    }
+
+    const skippedCount = activeTransactions.length - uniqueTransactions.length;
+
+    // Create Transaction records
     const createdTransactions = await prisma.$transaction(
-      activeTransactions.map((tx: any) => {
+      uniqueTransactions.map((tx: any) => {
         const amount =
           typeof tx.amount === "number"
             ? tx.amount
             : parseFloat(String(tx.amount).replace(/[^0-9.]/g, ""));
 
         const txType: TxType = tx.type === "PAYOUT" ? TxType.PAYOUT : TxType.PAYIN;
-
-        if (txType === "PAYIN") totalPayin += amount;
-        else totalPayout += amount;
-
         const encryptedDescription = tx.description ? encrypt(tx.description) : encrypt("No description");
-        const encryptedReference = tx.reference ? encrypt(tx.reference) : null;
+        const encryptedReference = tx.reference ? encrypt(String(tx.reference).trim()) : null;
 
         return prisma.transaction.create({
           data: {
@@ -101,9 +164,9 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    // Recompute totals from the actual created records
-    totalPayin = 0;
-    totalPayout = 0;
+    // Compute totals
+    let totalPayin = 0;
+    let totalPayout = 0;
     createdTransactions.forEach((tx: any) => {
       if (tx.type === "PAYIN") totalPayin += tx.amount;
       else totalPayout += tx.amount;
@@ -130,6 +193,7 @@ export async function POST(req: NextRequest) {
       after: {
         fileName: file.fileName,
         transactionCount: createdTransactions.length,
+        skippedDuplicates: skippedCount,
         totalPayin,
         totalPayout,
       },
@@ -140,6 +204,7 @@ export async function POST(req: NextRequest) {
       sourceFileId,
       transactionCount: createdTransactions.length,
       count: createdTransactions.length,
+      skipped: skippedCount,
       totalPayin,
       totalPayout,
     });
@@ -154,3 +219,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

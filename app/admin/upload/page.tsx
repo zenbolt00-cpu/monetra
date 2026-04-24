@@ -104,8 +104,9 @@ export default function AdminUploadPage() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Import failed");
 
+      const skippedMsg = data.skipped > 0 ? ` (${data.skipped} duplicates merged)` : "";
       toast.success(
-        `${data.count} transactions imported to ledger`
+        `${data.count} transactions imported to ledger${skippedMsg}`
       );
       router.push(
         selectedVendor === "admin" ? "/admin/my-payin" : "/admin/payin"

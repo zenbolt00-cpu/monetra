@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
-import PDFParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
@@ -453,52 +453,210 @@ export async function processExcel(
 
 /* ──────────────────────────────────────────────────────────
  *  PDF PROCESSOR – Inbuilt Local Intelligence Engine
+ *  Uses pdf-parse v2.4.5 API: getTable() + getText()
  * ────────────────────────────────────────────────────────── */
 export async function processPDF(
   buffer: Buffer,
   txTypeOverride?: TxType
 ): Promise<{ rows: ParsedRow[]; headers: string[] }> {
-  console.log("[PDF] Starting production extraction pipeline using INBUILT Intelligence Engine...");
-  
-  let textContent = "";
-  try {
-    const parser = new (PDFParse as any).PDFParse({ data: buffer });
-    const textResult = await parser.getText();
-    textContent = textResult.text || "";
-    console.log(`[PDF] Extracted ${textContent.length} characters of text.`);
-  } catch (err) {
-    console.error("[PDF] Text extraction error:", err);
-    return { rows: [], headers: [] };
-  }
-  
+  console.log("[PDF] Starting extraction with pdf-parse v2 engine...");
+
   const headers = ["Date", "Description", "Reference", "Amount", "Type", "Balance", "Mode"];
   let rows: ParsedRow[] = [];
 
-  if (textContent.trim().length < 10) {
-    console.warn("[PDF] Document appears to be empty or a scanned image (requires OCR).");
-    return { rows, headers };
+  let parser: any;
+  try {
+    // pdf-parse v2.4.5: default export IS the PDFParse class
+    parser = new PDFParse({ data: new Uint8Array(buffer) } as any);
+  } catch (initErr) {
+    console.error("[PDF] Parser init error:", initErr);
+    return { rows: [], headers };
   }
 
+  // ── STRATEGY 1: Try structured table extraction first ──
+  try {
+    const tableResult = await parser.getTable();
+    if (tableResult && tableResult.pages) {
+      console.log(`[PDF] Table extraction found ${tableResult.total} table(s)`);
+      rows = extractFromTables(tableResult, txTypeOverride);
+    }
+  } catch (tableErr) {
+    console.warn("[PDF] Table extraction unavailable, falling back to text:", tableErr);
+  }
+
+  // ── STRATEGY 2: Fall back to raw text extraction ──
+  if (rows.length === 0) {
+    try {
+      const textResult = await parser.getText();
+      const textContent = textResult?.text || "";
+      console.log(`[PDF] Text extraction got ${textContent.length} chars`);
+      if (textContent.trim().length >= 10) {
+        rows = extractFromText(textContent, txTypeOverride);
+      } else {
+        console.warn("[PDF] Document appears empty or scanned (needs OCR).");
+      }
+    } catch (textErr) {
+      console.error("[PDF] Text extraction error:", textErr);
+    }
+  }
+
+  // Cleanup parser
+  try { await parser.destroy(); } catch (_) {}
+
+  console.log(`[PDF] Extraction complete. Found ${rows.length} valid transactions.`);
+  return { rows, headers };
+}
+
+/* ──────────────────────────────────────────────────────────
+ *  Extract transactions from structured table data
+ * ────────────────────────────────────────────────────────── */
+function extractFromTables(tableResult: any, txTypeOverride?: TxType): ParsedRow[] {
+  const rows: ParsedRow[] = [];
+
+  // Gather all tables from all pages (+ mergedTables if available)
+  const allTables: string[][][] = [];
+  if (tableResult.mergedTables?.length) {
+    allTables.push(...tableResult.mergedTables);
+  }
+  for (const page of tableResult.pages || []) {
+    if (page.tables?.length) {
+      allTables.push(...page.tables);
+    }
+  }
+
+  for (const table of allTables) {
+    if (!table || table.length < 2) continue;
+
+    // First row is likely the header – detect column mapping
+    const headerRow = table[0].map((h: string) => (h || "").trim());
+    const mapping = detectColumns(headerRow);
+
+    // If we can't even find a date column, skip this table
+    if (!mapping.date && !mapping.amount && !mapping.credit && !mapping.debit) continue;
+
+    const colIndex = (name?: string) => {
+      if (!name) return -1;
+      return headerRow.findIndex((h: string) =>
+        h.toLowerCase().trim() === name.toLowerCase().trim()
+      );
+    };
+
+    const dateIdx = colIndex(mapping.date);
+    const descIdx = colIndex(mapping.description);
+    const refIdx = colIndex(mapping.reference);
+    const creditIdx = colIndex(mapping.credit);
+    const debitIdx = colIndex(mapping.debit);
+    const amountIdx = colIndex(mapping.amount);
+    const balanceIdx = colIndex(mapping.balance);
+    const typeIdx = colIndex(mapping.type);
+
+    for (let r = 1; r < table.length; r++) {
+      const row = table[r];
+      if (!row || row.length < 2) continue;
+
+      // Get date
+      const dateStr = dateIdx >= 0 ? (row[dateIdx] || "").trim() : "";
+      if (!dateStr) continue;
+      const date = parseDate(dateStr);
+      if (isNaN(date.getTime())) continue;
+
+      // Get amount & type
+      let amount: number;
+      let type: TxType;
+
+      if (creditIdx >= 0 && debitIdx >= 0) {
+        const creditVal = parseNumber(row[creditIdx]);
+        const debitVal = parseNumber(row[debitIdx]);
+        if (!isNaN(creditVal) && creditVal > 0) {
+          amount = creditVal;
+          type = TxType.PAYIN;
+        } else if (!isNaN(debitVal) && debitVal > 0) {
+          amount = debitVal;
+          type = TxType.PAYOUT;
+        } else if (!isNaN(creditVal) && creditVal !== 0) {
+          amount = Math.abs(creditVal);
+          type = TxType.PAYIN;
+        } else if (!isNaN(debitVal) && debitVal !== 0) {
+          amount = Math.abs(debitVal);
+          type = TxType.PAYOUT;
+        } else {
+          continue;
+        }
+      } else if (amountIdx >= 0) {
+        const rawAmount = parseNumber(row[amountIdx]);
+        if (isNaN(rawAmount) || rawAmount === 0) continue;
+        amount = Math.abs(rawAmount);
+        if (typeIdx >= 0) {
+          const tv = (row[typeIdx] || "").toLowerCase().trim();
+          if (["cr", "credit", "c", "payin", "pay-in", "receipt"].includes(tv)) {
+            type = TxType.PAYIN;
+          } else if (["dr", "debit", "d", "payout", "pay-out", "payment"].includes(tv)) {
+            type = TxType.PAYOUT;
+          } else {
+            type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
+          }
+        } else {
+          type = rawAmount >= 0 ? TxType.PAYIN : TxType.PAYOUT;
+        }
+      } else {
+        continue;
+      }
+
+      if (txTypeOverride) type = txTypeOverride;
+
+      const description = descIdx >= 0 ? (row[descIdx] || "").trim() : "Transaction";
+      let reference = refIdx >= 0 ? (row[refIdx] || "").trim() : "";
+      if (!reference || reference.length < 4) {
+        reference = extractReference(description) || "";
+        if (!reference) {
+          const allText = row.join(" ");
+          reference = extractReference(allText) || "";
+        }
+      }
+
+      const balance = balanceIdx >= 0 ? parseNumber(row[balanceIdx]) : undefined;
+      const mode = detectTransactionMode(description + " " + (reference || ""));
+      const time = extractTime(row.join(" "));
+
+      rows.push({
+        date,
+        amount,
+        description: description || "Transaction",
+        reference: reference || undefined,
+        type,
+        balance: balance && !isNaN(balance) ? balance : undefined,
+        rowIndex: r,
+        rawData: Object.fromEntries(headerRow.map((h: string, i: number) => [h, row[i] || ""])),
+        isExcluded: false,
+        mode,
+        time,
+      });
+    }
+  }
+
+  return rows;
+}
+
+/* ──────────────────────────────────────────────────────────
+ *  Extract transactions from raw text (fallback)
+ * ────────────────────────────────────────────────────────── */
+function extractFromText(textContent: string, txTypeOverride?: TxType): ParsedRow[] {
+  const rows: ParsedRow[] = [];
   const lines = textContent.split("\n");
-  
-  // Date Patterns - Aggressive to catch Indian bank formats
+
   const datePatterns = [
     /(\d{1,2}[/\-. ](?:0?[1-9]|1[0-2]|[A-Z]{3,9})[/\-. ](?:\d{4}|\d{2}))/i,
     /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})/i,
-    /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/
+    /(\d{4}[/\-.](?:0?[1-9]|1[0-2])[/\-.](?:0?[1-9]|[12]\d|3[01]))/,
   ];
-
-  // Amount Pattern - Catch integers or decimals with commas
   const amountPattern = /(?:\b|-)(?:\d{1,3}(?:,\d{2,3})*|\d+)(?:\.\d{1,2})?\b/g;
 
-  // AGGRESSIVE EXTRACTION LOOP
   let currentTx: Partial<ParsedRow> | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line.length < 5) continue;
 
-    // Check for date in this line
     let foundDate: Date | null = null;
     let dateStr = "";
     for (const p of datePatterns) {
@@ -514,55 +672,49 @@ export async function processPDF(
     }
 
     if (foundDate) {
-      // If we already have a transaction being built, push it
       if (currentTx && currentTx.date && currentTx.amount) {
         rows.push(currentTx as ParsedRow);
       }
 
-      // Start new transaction
       currentTx = {
         date: foundDate,
         description: line.replace(dateStr, "").trim(),
         rowIndex: rows.length + 1,
         isExcluded: false,
-        rawData: line
+        rawData: line,
       };
 
-      // Extract amounts from this line
       const amountsFound = line.match(amountPattern) || [];
       const parsedAmounts = amountsFound
-        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter(a => a.value > 0.01);
+        .map((a) => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter((a) => a.value > 0.01);
 
       if (parsedAmounts.length > 0) {
-        // Heuristic: Last is usually balance, first is amount
         currentTx.amount = parsedAmounts[0].value;
         if (parsedAmounts.length >= 2) {
           currentTx.balance = parsedAmounts[parsedAmounts.length - 1].value;
           if (parsedAmounts.length >= 3) {
-            // [Credit, Debit, Balance] - pick the larger one as amount
             currentTx.amount = Math.max(parsedAmounts[0].value, parsedAmounts[1].value);
           }
         }
       }
 
-      // Extract Reference & Mode
       currentTx.reference = extractReference(line);
       currentTx.mode = detectTransactionMode(line);
       currentTx.time = extractTime(line);
-
-      // Determine Type
-      currentTx.type = txTypeOverride || (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/) ? TxType.PAYOUT : TxType.PAYIN);
+      currentTx.type =
+        txTypeOverride ||
+        (line.toLowerCase().match(/payout|paid|withdrawal|dr|debit|outward|transfer to|sent/)
+          ? TxType.PAYOUT
+          : TxType.PAYIN);
     } else if (currentTx) {
-      // This line doesn't have a date, but it might be a continuation of the previous description
-      // or contain the amount if it was missing on the date line
       currentTx.description += " " + line;
       currentTx.rawData += "\n" + line;
 
       const amountsFound = line.match(amountPattern) || [];
       const parsedAmounts = amountsFound
-        .map(a => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
-        .filter(a => a.value > 0.01);
+        .map((a) => ({ original: a, value: Math.abs(parseFloat(a.replace(/,/g, ""))) }))
+        .filter((a) => a.value > 0.01);
 
       if (parsedAmounts.length > 0 && !currentTx.amount) {
         currentTx.amount = parsedAmounts[0].value;
@@ -576,22 +728,18 @@ export async function processPDF(
     }
   }
 
-  // Push the last one
   if (currentTx && currentTx.date && currentTx.amount) {
     rows.push(currentTx as ParsedRow);
   }
 
-  // Post-processing: clean descriptions
-  rows.forEach(row => {
+  // Clean descriptions
+  rows.forEach((row) => {
     if (row.reference) row.description = row.description.replace(row.reference, "");
-    // Remove amount strings from description
     const amounts = row.description.match(amountPattern) || [];
-    amounts.forEach(a => row.description = row.description.replace(a, ""));
+    amounts.forEach((a) => (row.description = row.description.replace(a, "")));
     row.description = row.description.replace(/\s+/g, " ").trim();
     if (!row.description) row.description = "Transaction";
   });
 
-  console.log(`[PDF] Extraction complete. Found ${rows.length} valid transactions.`);
-
-  return { rows, headers };
+  return rows;
 }

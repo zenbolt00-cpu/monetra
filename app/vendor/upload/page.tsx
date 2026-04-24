@@ -32,22 +32,25 @@ export default function VendorUploadPage() {
 
   const handleFileSet = (file: File) => {
     setSelectedFile(file);
+    // Auto-trigger upload
+    setTimeout(() => handleUpload(file), 100);
   };
 
-  const handleUpload = async () => {
+  const handleUpload = async (fileToUpload?: File) => {
     const vendorId = (session?.user as any)?.vendorId;
     if (!vendorId) {
       toast.error("Account error: Vendor ID missing");
       return;
     }
-    if (!selectedFile) {
+    const targetFile = fileToUpload || selectedFile;
+    if (!targetFile) {
       toast.error("No file selected");
       return;
     }
 
     setIsUploading(true);
     const formData = new FormData();
-    formData.append("file", selectedFile);
+    formData.append("file", targetFile);
     formData.append("vendorId", vendorId);
     formData.append("txType", txType);
 
@@ -89,7 +92,8 @@ export default function VendorUploadPage() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Import failed");
 
-      toast.success(`${data.count} records uploaded successfully`);
+      const skippedMsg = data.skipped > 0 ? ` (${data.skipped} duplicates merged)` : "";
+      toast.success(`${data.count} records uploaded successfully${skippedMsg}`);
       router.push("/vendor/payin");
     } catch (error: any) {
       toast.error(error.message || "Failed to finalize upload");
