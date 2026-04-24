@@ -455,18 +455,23 @@ async function extractHighPrecisionTables(buffer: Buffer): Promise<string[][][]>
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true });
   const pdf = await loadingTask.promise;
   const allTables: string[][][] = [];
+  let masterColBoundaries: number[] = [];
+
+  console.log(`[PDF Engine] Total Pages to parse: ${pdf.numPages}`);
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const items = content.items as any[];
 
-    if (items.length === 0) continue;
+    if (items.length === 0) {
+      console.log(`[PDF Engine] Page ${i} is empty, skipping.`);
+      continue;
+    }
 
     // Group items into rows based on Y coordinate
-    // items have transform: [scaleX, skewY, skewX, scaleY, x, y]
     const rowsMap = new Map<number, any[]>();
-    const rowTolerance = 5; // units
+    const rowTolerance = 5;
 
     items.forEach(item => {
       const y = Math.round(item.transform[5] / rowTolerance) * rowTolerance;
@@ -474,73 +479,75 @@ async function extractHighPrecisionTables(buffer: Buffer): Promise<string[][][]>
       rowsMap.get(y)!.push(item);
     });
 
-    // Sort rows from top to bottom
     const sortedY = Array.from(rowsMap.keys()).sort((a, b) => b - a);
     
-    // Identify the best header row to define column structure
-    let bestHeaderY = -1;
+    // 1. Identify the best header row on THIS page
+    let pageHeaderY = -1;
     let maxHeaderScore = 0;
     const headerKeywords = ["date", "particulars", "description", "narration", "ref", "utr", "chq", "withdrawal", "deposit", "debit", "credit", "amount", "balance"];
     
     for (const y of sortedY) {
       const rowText = rowsMap.get(y)!.map(it => it.str.toLowerCase()).join(" ");
       const score = headerKeywords.filter(k => rowText.includes(k)).length;
-      if (score > maxHeaderScore) {
+      if (score > maxHeaderScore && score >= 2) {
         maxHeaderScore = score;
-        bestHeaderY = y;
+        pageHeaderY = y;
       }
     }
 
-    // Define column boundaries based on the detected header row or all items
-    let colBoundaries: number[] = [];
-    if (bestHeaderY !== -1) {
-      const headerItems = rowsMap.get(bestHeaderY)!.sort((a, b) => a.transform[4] - b.transform[4]);
-      colBoundaries = headerItems.map(it => it.transform[4]);
-    } else {
-      // Fallback to clustering if no clear header row found
+    // 2. If we found a clear header, update the master boundaries
+    if (pageHeaderY !== -1) {
+      const headerItems = rowsMap.get(pageHeaderY)!.sort((a, b) => a.transform[4] - b.transform[4]);
+      masterColBoundaries = headerItems.map(it => it.transform[4]);
+      console.log(`[PDF Engine] Page ${i}: Found header, updated boundaries.`);
+    } else if (masterColBoundaries.length === 0) {
+      // 3. Fallback to clustering ONLY if we haven't found any boundaries yet
       const allX = items.map(it => it.transform[4]).sort((a, b) => a - b);
       if (allX.length > 0) {
         let currentGroup = [allX[0]];
         for (let j = 1; j < allX.length; j++) {
-          if (allX[j] - allX[j-1] < 15) { // Increased clustering tolerance
+          if (allX[j] - allX[j-1] < 15) {
             currentGroup.push(allX[j]);
           } else {
-            colBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
+            masterColBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
             currentGroup = [allX[j]];
           }
         }
-        colBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
+        masterColBoundaries.push(currentGroup.reduce((a, b) => a + b, 0) / currentGroup.length);
+        console.log(`[PDF Engine] Page ${i}: No header, used clustering for boundaries.`);
       }
     }
 
     const pageData: string[][] = [];
-    for (const y of sortedY) {
-      const rowItems = rowsMap.get(y)!.sort((a, b) => a.transform[4] - b.transform[4]);
-      const rowData = new Array(colBoundaries.length).fill("");
-      
-      rowItems.forEach(item => {
-        const x = item.transform[4];
-        // Find the closest column boundary
-        let bestCol = 0;
-        let minDiff = Math.abs(x - colBoundaries[0]);
-        for (let k = 1; k < colBoundaries.length; k++) {
-          const diff = Math.abs(x - colBoundaries[k]);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestCol = k;
+    if (masterColBoundaries.length > 0) {
+      for (const y of sortedY) {
+        const rowItems = rowsMap.get(y)!.sort((a, b) => a.transform[4] - b.transform[4]);
+        const rowData = new Array(masterColBoundaries.length).fill("");
+        
+        rowItems.forEach(item => {
+          const x = item.transform[4];
+          let bestCol = 0;
+          let minDiff = Math.abs(x - masterColBoundaries[0]);
+          for (let k = 1; k < masterColBoundaries.length; k++) {
+            const diff = Math.abs(x - masterColBoundaries[k]);
+            if (diff < minDiff) {
+              minDiff = diff;
+              bestCol = k;
+            }
           }
-        }
-        // Append text with space
-        rowData[bestCol] = (rowData[bestCol] + " " + item.str).trim();
-      });
+          rowData[bestCol] = (rowData[bestCol] + " " + item.str).trim();
+        });
 
-      // Filter out noise: rows with at least 2 non-empty cells
-      if (rowData.filter(c => c.length > 0).length >= 2) {
-        pageData.push(rowData);
+        if (rowData.filter(c => c.length > 0).length >= 2) {
+          pageData.push(rowData);
+        }
       }
     }
     
-    if (pageData.length > 0) allTables.push(pageData);
+    if (pageData.length > 0) {
+      allTables.push(pageData);
+      console.log(`[PDF Engine] Page ${i}: Extracted ${pageData.length} rows.`);
+    }
   }
 
   return allTables;
