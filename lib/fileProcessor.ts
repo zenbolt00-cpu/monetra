@@ -1,20 +1,26 @@
 import * as XLSX from "xlsx";
 import { TxType, FileType } from "@prisma/client";
 import { detectColumns } from "./columnDetector";
-import { PDFParse } from "pdf-parse";
+
+// Dynamic import for pdf-parse to avoid top-level issues on Vercel
+let PDFParseClass: any = null;
 
 // Shim DOMMatrix for Node.js environments to prevent pdfjs-dist errors
 if (typeof global !== "undefined" && typeof (global as any).DOMMatrix === "undefined") {
   (global as any).DOMMatrix = class DOMMatrix {
+    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
     m11 = 1; m12 = 0; m13 = 0; m14 = 0;
     m21 = 0; m22 = 1; m23 = 0; m24 = 0;
     m31 = 0; m32 = 0; m33 = 1; m34 = 0;
     m41 = 0; m42 = 0; m43 = 0; m44 = 1;
-    constructor(arg?: any) {
-      if (typeof arg === "string") {
-        // Very basic parsing for simple matrix strings if needed
+    is2D = true;
+    isIdentity = true;
+    constructor(init?: any) {
+      if (Array.isArray(init) && init.length >= 6) {
+        [this.a, this.b, this.c, this.d, this.e, this.f] = init;
       }
     }
+    toString() { return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`; }
   };
 }
 
@@ -466,9 +472,13 @@ export async function processPDF(
 
   let parser: any;
   try {
+    if (!PDFParseClass) {
+      const mod = await import("pdf-parse");
+      PDFParseClass = mod.PDFParse;
+    }
     // pdf-parse v2.4.5: default export IS the PDFParse class
-    parser = new PDFParse({ data: new Uint8Array(buffer) } as any);
-  } catch (initErr) {
+    parser = new PDFParseClass({ data: new Uint8Array(buffer) } as any);
+  } catch (initErr: any) {
     console.error("[PDF] Parser init error:", initErr);
     return { rows: [], headers };
   }

@@ -60,6 +60,13 @@ export default function VendorUploadPage() {
         body: formData,
       });
 
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        console.error("[UPLOAD] Non-JSON response:", text);
+        throw new Error(`Server error (${res.status}). The service might be temporarily unavailable or hit a limit.`);
+      }
+
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Upload failed");
 
