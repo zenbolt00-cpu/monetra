@@ -33,10 +33,14 @@ export interface ParsedRow {
 function parseNumber(val: any): number {
   if (typeof val === "number") return val;
   if (!val) return NaN;
-  let str = String(val).trim();
+  let str = String(val).trim().toUpperCase();
   
-  // Remove currency symbols, spaces, and other non-numeric chars except . , - ( )
-  str = str.replace(/[₹$€£¥\s]+/g, "");
+  // Extract indicator if present at the end (e.g., "1,234.56 CR")
+  const hasCr = str.endsWith("CR");
+  const hasDr = str.endsWith("DR");
+  
+  // Remove currency symbols, spaces, CR/DR, and other non-numeric chars
+  str = str.replace(/[₹$€£¥\sA-Z]+/g, "");
   
   // Handle (1,234.56) -> -1,234.56
   if (str.startsWith("(") && str.endsWith(")")) {
@@ -48,16 +52,19 @@ function parseNumber(val: any): number {
     str = "-" + str.slice(0, -1);
   }
 
-  // Detect if it's European format: 1.234,56 (comma as decimal separator)
-  // Check if there's a comma followed by 2 digits at the end AND no other comma
+  // Detect if it's European format: 1.234,56
   if (/,(\d{2})$/.test(str) && (str.match(/\./g) || []).length >= 1 && (str.match(/,/g) || []).length === 1) {
     str = str.replace(/\./g, "").replace(",", ".");
   } else {
-    // Normal format: remove commas used as thousand separators
     str = str.replace(/,/g, "");
   }
 
-  const num = parseFloat(str);
+  let num = parseFloat(str);
+  
+  // If we had a DR indicator, it's often a negative (debit) in some systems, 
+  // but in our internal logic we keep amount absolute and set type.
+  // However, if the string was "-100 CR", that's confusing. 
+  // We'll just return the magnitude and let the caller handle the sign/type.
   return num;
 }
 
@@ -448,9 +455,14 @@ export async function processExcel(
 async function extractHighPrecisionTables(buffer: Buffer): Promise<string[][][]> {
   // Use legacy build for Node.js environments to prevent "Object.defineProperty called on non-object" errors
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  // Set worker to local path for Node.js
-  const path = require("path");
-  pdfjs.GlobalWorkerOptions.workerSrc = path.join(process.cwd(), "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs");
+  // Use require.resolve to find the absolute path on both local and Vercel/Production environments
+  try {
+    pdfjs.GlobalWorkerOptions.workerSrc = require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  } catch (e) {
+    // Fallback for local dev if resolve fails in some ESM contexts
+    const path = require("path");
+    pdfjs.GlobalWorkerOptions.workerSrc = path.join(process.cwd(), "node_modules", "pdfjs-dist", "legacy", "build", "pdf.worker.mjs");
+  }
 
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true });
   const pdf = await loadingTask.promise;
